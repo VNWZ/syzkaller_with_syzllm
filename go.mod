@@ -1,6 +1,8 @@
 module github.com/google/syzkaller
 
-go 1.23.7
+go 1.23.1
+
+toolchain go1.23.7
 
 require (
 	cloud.google.com/go v0.120.0
