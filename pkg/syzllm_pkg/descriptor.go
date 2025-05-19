@@ -7,7 +7,7 @@ import (
 )
 
 func ExtractCallNameWithoutDescriptor(call string) string {
-	CallNamePattern := regexp.MustCompile(`^([a-zA-Z0-9_]+)\$`)
+	CallNamePattern := regexp.MustCompile(`([a-zA-Z0-9_]+)\$`)
 	match := CallNamePattern.FindStringSubmatch(call)
 
 	if len(match) > 1 {
@@ -19,6 +19,10 @@ func ExtractCallNameWithoutDescriptor(call string) string {
 }
 
 func ProcessDescriptor(line string) string {
+	if !strings.Contains(line, "$SyzLLM") {
+		return line
+	}
+
 	callsWithoutDescriptor := []string{"pipe"}
 	for _, c := range callsWithoutDescriptor {
 		if strings.HasPrefix(line, c) {
