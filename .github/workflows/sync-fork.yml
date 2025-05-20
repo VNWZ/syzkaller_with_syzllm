@@ -1,0 +1,25 @@
+name: Sync Fork with Upstream PR
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs daily
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync with upstream
+        uses: tgymnich/fork-sync@v1.8
+        with:
+          owner: google
+          repo: syzkaller
+          base: master # Your fork’s branch
+          head: master # Upstream branch
+          token: ${{ secrets.GITHUB_TOKEN }} # Default token
+          merge: true # Merge the PR automatically if no conflicts
