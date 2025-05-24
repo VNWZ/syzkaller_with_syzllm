@@ -20,6 +20,7 @@ func ParseResource(syzllmCall string, calls []string, insertPosition int) []stri
 	}
 
 	// todo: update nested res
+	// every loop process a most outside res tag, after parsing all res tags then insert them to calls
 	return calls // temp
 }
 
@@ -70,7 +71,6 @@ func countNormalResProvider(call string) int {
 	return 0
 }
 
-// todo: use combined regex
 var multiResProviderPattern = regexp.MustCompile(`<r(\d+)=>`)
 
 func countMultiResProvider(call string) int {
@@ -78,7 +78,6 @@ func countMultiResProvider(call string) int {
 	return len(multiResProviderPattern.FindAllString(call, -1))
 }
 
-// insert 1 new call at a time
 func insertCallNoResTag(calls []string, insertPosition int, call string) {
 	resProviderCountBeforeInsertPosition := 0
 	for i, c := range calls {
@@ -91,7 +90,7 @@ func insertCallNoResTag(calls []string, insertPosition int, call string) {
 	resProviderCountInNewCall := countResProvider(call)
 
 	// update newcall res num
-	calls[insertPosition] = updateResNum(call, resProviderCountBeforeInsertPosition)
+	calls[insertPosition] = updateResProvider(call, resProviderCountBeforeInsertPosition)
 	// update remain calls res num
 	updatedRemainCalls := updateRemainCallsResNum(calls[insertPosition+1:], resProviderCountInNewCall, resProviderCountBeforeInsertPosition)
 	for i, c := range updatedRemainCalls {
@@ -99,7 +98,11 @@ func insertCallNoResTag(calls []string, insertPosition int, call string) {
 	}
 }
 
-func updateRemainCallsResNum(remainCalls []string, offset int, resProviderCountBeforeInsertPosition int) []string {
+// 1. assign new res num for Prov.
+// 2. update reference num by map
+func updateRemainCallsResNum(remainCalls []string, resProviderCountAtInsertPosition int, resProviderCountBeforeInsertPosition int) []string {
+	count := resProviderCountBeforeInsertPosition + resProviderCountAtInsertPosition
+
 	// Map to store original tag number to new number (e.g., "6" -> "6+offset")
 	tagMap := make(map[string]string)
 
@@ -136,7 +139,8 @@ func updateRemainCallsResNum(remainCalls []string, offset int, resProviderCountB
 			num, _ := strconv.Atoi(numStr)
 			if num >= resProviderCountBeforeInsertPosition {
 				// Update tag with offset
-				newNum := num + offset
+				newNum := count
+				count += 1
 				newNumStr := strconv.Itoa(newNum)
 				tagMap[numStr] = newNumStr
 
@@ -157,22 +161,28 @@ func updateRemainCallsResNum(remainCalls []string, offset int, resProviderCountB
 		// Append the remaining part of the string
 		builder.WriteString(s[lastIndex:])
 		result[i] = builder.String()
+	}
 
-		resReferencesFormats := []string{"r%s,", "r%s)", "r%s}"}
-		// Update the same res prov numbers in subsequent strings
-		for j := i + 1; j < len(result); j++ {
-			for oldNum, newNum := range tagMap {
-				for _, resRef := range resReferencesFormats {
-					// Replace rX = (at start)
-					oldTagStart := fmt.Sprintf(resRef, regexp.QuoteMeta(oldNum))
-					newTagStart := fmt.Sprintf(resRef, newNum)
-					result[j] = regexp.MustCompile(oldTagStart).ReplaceAllString(result[j], newTagStart)
+	// keys must be sorted avoiding overwriting
+	// e.g., r2->r3, r3->r4; replacing call(r2, r3), 1st loop call(r3, r4) -> 2nd loop call(r4, r4)
+	sortedKeys := SortedMapKeysDesc(tagMap)
 
-					// Replace <rX=> (anywhere)
-					oldTag := fmt.Sprintf(resRef, regexp.QuoteMeta(oldNum))
-					newTag := fmt.Sprintf(resRef, newNum)
-					result[j] = strings.ReplaceAll(result[j], oldTag, newTag)
-				}
+	resReferencesFormats := []string{"r%s,", "r%s)", "r%s}"}
+	// Update the same res prov numbers in subsequent strings
+	for i := 0; i < len(result); i++ {
+		for _, k := range sortedKeys {
+			oldNum := k
+			newNum := tagMap[k]
+			for _, resRef := range resReferencesFormats {
+				// Replace rX = (at start)
+				oldTagStart := fmt.Sprintf(resRef, regexp.QuoteMeta(oldNum))
+				newTagStart := fmt.Sprintf(resRef, newNum)
+				result[i] = strings.ReplaceAll(result[i], oldTagStart, newTagStart)
+
+				// Replace <rX=> (anywhere)
+				oldTag := fmt.Sprintf(resRef, regexp.QuoteMeta(oldNum))
+				newTag := fmt.Sprintf(resRef, newNum)
+				result[i] = strings.ReplaceAll(result[i], oldTag, newTag)
 			}
 		}
 	}
@@ -182,7 +192,7 @@ func updateRemainCallsResNum(remainCalls []string, offset int, resProviderCountB
 
 var resProviderPattern = regexp.MustCompile(`^r(\d+) = |<r(\d+)=>`)
 
-func updateResNum(call string, previousCount int) string {
+func updateResProvider(call string, previousCount int) string {
 	matches := resProviderPattern.FindAllStringSubmatchIndex(call, -1)
 	if len(matches) == 0 {
 		return call

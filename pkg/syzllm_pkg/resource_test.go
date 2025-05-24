@@ -551,3 +551,93 @@ func TestUpdateRemainCallsResNum(t *testing.T) {
 		})
 	}
 }
+
+func TestInsertCallNoResTag(t *testing.T) {
+	tests := []struct {
+		name       string
+		calls      []string
+		idx        int
+		syzllmCall string
+		expected   []string // same to initial calls
+	}{
+		{
+			name: "1 Normal Prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r0 = openat$cgroup_ro(0xffffffffffffff9c, &(0x7f0000000040)='blkio.bfq.io_service_bytes_recursive\\x00', 0x275a, 0x0)", // [MASK]
+				"r2 = sendto$llc(0x2)",
+				"r3 = openat(0x7ffff, r2, r0, r1)",
+				"writev$SyzLLM(0xb, r2, r3)",
+				"pipe2$9p(&(0x7f0000000040)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x0)",
+				"r6 = syscall$des(0x0, r2, r3, r4, r5, r0, r1)"},
+			idx:        2,
+			syzllmCall: "r0 = openat$cgroup_ro(0xffffffffffffff9c, &(0x7f0000000040)='blkio.bfq.io_service_bytes_recursive\\x00', 0x275a, 0x0)",
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$cgroup_ro(0xffffffffffffff9c, &(0x7f0000000040)='blkio.bfq.io_service_bytes_recursive\\x00', 0x275a, 0x0)", // [MASK]
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)"},
+		},
+		{
+			name: "1 Multi Prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x0)", // [MASK]
+				"r2 = sendto$llc(0x2)",
+				"r3 = openat(0x7ffff, r2, r0, r1)",
+				"writev$SyzLLM(0xb, r2, r3)",
+				"pipe2$9p(&(0x7f0000000040)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x0)",
+				"r6 = syscall$des(0x0, r2, r3, r4, r5, r0, r1)"},
+			idx:        2,
+			syzllmCall: "pipe2$9p(&(0x7f0000000040)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x0)",
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+		},
+		{
+			name: "1 Normal Prov + 1 Multi Prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r0 = call$desc(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff})", // [MASK]
+				"r2 = sendto$llc(0x2)",
+				"r3 = openat(0x7ffff, r2, r0, r1)",
+				"writev$SyzLLM(0xb, r2, r3)",
+				"pipe2$9p(&(0x7f0000000040)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x0)",
+				"r6 = syscall$des(0x0, r2, r3, r4, r5, r0, r1)"},
+			idx:        2,
+			syzllmCall: "r0 = call$desc(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff})",
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = call$desc(&(0x7f0000000040)={<r3=>0xffffffffffffffff, <r4=>0xffffffffffffffff})", // [MASK]
+				"r5 = sendto$llc(0x2)",
+				"r6 = openat(0x7ffff, r5, r0, r1)",
+				"writev$SyzLLM(0xb, r5, r6)",
+				"pipe2$9p(&(0x7f0000000040)={<r7=>0xffffffffffffffff, <r8=>0xffffffffffffffff}, 0x0)",
+				"r9 = syscall$des(0x0, r5, r6, r7, r8, r0, r1)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originCalls := tt.calls
+			insertCallNoResTag(tt.calls, tt.idx, tt.syzllmCall)
+			if !AssertSlicesAreEqual(tt.calls, tt.expected) {
+				t.Errorf("updateRemainCallsResNum(%q) = %v; want %v", tt.calls, originCalls, tt.expected)
+			}
+		})
+	}
+}
