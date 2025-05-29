@@ -6,6 +6,7 @@ package prog
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/google/syzkaller/pkg/syzllm_pkg"
 	"math"
 	"math/rand"
 	"sort"
@@ -192,6 +193,15 @@ func (ctx *mutator) insertCall() bool {
 	if idx < len(p.Calls) {
 		c = p.Calls[idx]
 	}
+
+	// syzllm start
+	// todo: reduce syzllm prob over time
+	if len(p.Calls) >= 6 && syzllm_pkg.MutationSelectionRand.Float64() < syzllm_pkg.SyzllmProbabilityFuzzer {
+		p = newSyzllm(p, idx, ctx.ct).insert()
+		return true
+	}
+	// syzllm end
+
 	s := analyze(ctx.ct, ctx.corpus, p, c)
 	calls := r.generateCall(s, p, idx)
 	p.insertBefore(c, calls)
