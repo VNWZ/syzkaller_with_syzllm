@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -53,7 +54,22 @@ func SortedMapKeysDesc(m map[string]string) []string {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		return keys[i] > keys[j]
+		numI, err := strconv.Atoi(keys[i])
+		if err != nil {
+			panic("invalid numeric key: " + keys[i])
+		}
+		numJ, err := strconv.Atoi(keys[j])
+		if err != nil {
+			panic("invalid numeric key: " + keys[j])
+		}
+		return numI > numJ
 	})
 	return keys
+}
+
+func enlargeSlice(slice []string, pos int) ([]string, error) {
+	if pos < 0 || pos > len(slice) {
+		return nil, fmt.Errorf("invalid position %d", pos)
+	}
+	return append(slice[:pos], append([]string{""}, slice[pos:]...)...), nil
 }

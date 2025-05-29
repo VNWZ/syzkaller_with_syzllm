@@ -636,7 +636,677 @@ func TestInsertCallNoResTag(t *testing.T) {
 			originCalls := tt.calls
 			insertCallNoResTag(tt.calls, tt.idx, tt.syzllmCall)
 			if !AssertSlicesAreEqual(tt.calls, tt.expected) {
-				t.Errorf("updateRemainCallsResNum(%q) = %v; want %v", tt.calls, originCalls, tt.expected)
+				t.Errorf("insertCallNoResTag(%q) = %v; want %v", tt.calls, originCalls, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseResource(t *testing.T) {
+	tests := []struct {
+		name       string
+		syzllmCall string
+		calls      []string
+		idx        int
+		expected   []string
+	}{
+		{
+			name:       "1 res tag + no match",
+			syzllmCall: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}], 0x1, 0x2710)",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"r4 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r4}], 0x1, 0x2710)", // [MASK]
+				"r5 = sendto$llc(0x2)",
+				"r6 = openat(0x7ffff, r5, r0, r1)",
+				"writev$SyzLLM(0xb, r5, r6)",
+				"pipe2$9p(&(0x7f0000000040)={<r7=>0xffffffffffffffff, <r8=>0xffffffffffffffff}, 0x0)",
+				"r9 = syscall$des(0x0, r5, r6, r7, r8, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 match",
+			syzllmCall: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}], 0x1, 0x2710)",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r1}], 0x1, 0x2710)", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+		},
+		{
+			name:       "2 res tag + 0 match",
+			syzllmCall: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}, {@RSTART@openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)@REND@}], 0x2, 0x0)",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"r4 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"r5 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r4}, {r5}], 0x2, 0x0)", // [MASK]
+				"r6 = sendto$llc(0x2)",
+				"r7 = openat(0x7ffff, r6, r0, r1)",
+				"writev$SyzLLM(0xb, r6, r7)",
+				"pipe2$9p(&(0x7f0000000040)={<r8=>0xffffffffffffffff, <r9=>0xffffffffffffffff}, 0x0)",
+				"r10 = syscall$des(0x0, r6, r7, r8, r9, r0, r1)"},
+		},
+		{
+			name:       "2 res tag + 1 match",
+			syzllmCall: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}, {@RSTART@openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)@REND@}], 0x2, 0x0)",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"pipe2$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"r4 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r1}, {r4}], 0x2, 0x0)", // [MASK]
+				"r5 = sendto$llc(0x2)",
+				"r6 = openat(0x7ffff, r5, r0, r1)",
+				"writev$SyzLLM(0xb, r5, r6)",
+				"pipe2$9p(&(0x7f0000000040)={<r7=>0xffffffffffffffff, <r8=>0xffffffffffffffff}, 0x0)",
+				"r9 = syscall$des(0x0, r5, r6, r7, r8, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 pipe tag + 0 match",
+			syzllmCall: "epoll_ctl$SyzLLM(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"call$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"call$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"r4 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r4, 0x2, r5, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r7 = sendto$llc(0x2)",
+				"r8 = openat(0x7ffff, r7, r0, r1)",
+				"writev$SyzLLM(0xb, r7, r8)",
+				"pipe2$9p(&(0x7f0000000040)={<r9=>0xffffffffffffffff, <r10=>0xffffffffffffffff}, 0x0)",
+				"r11 = syscall$des(0x0, r7, r8, r9, r10, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 pipe tag + 1 res match",
+			syzllmCall: "epoll_ctl$SyzLLM(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"call$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"call$9p(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"pipe2(&(0x7f0000000240)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r1, 0x2, r4, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r6 = sendto$llc(0x2)",
+				"r7 = openat(0x7ffff, r6, r0, r1)",
+				"writev$SyzLLM(0xb, r6, r7)",
+				"pipe2$9p(&(0x7f0000000040)={<r8=>0xffffffffffffffff, <r9=>0xffffffffffffffff}, 0x0)",
+				"r10 = syscall$des(0x0, r6, r7, r8, r9, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 pipe tag + 1 pipe match",
+			syzllmCall: "epoll_ctl$SyzLLM(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = call$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = call$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"r4 = epoll_create1$SyzLLM(0x80000)",
+				"epoll_ctl$SyzLLM(r4, 0x2, r2, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r5 = sendto$llc(0x2)",
+				"r6 = openat(0x7ffff, r5, r0, r1)",
+				"writev$SyzLLM(0xb, r5, r6)",
+				"pipe2$9p(&(0x7f0000000040)={<r7=>0xffffffffffffffff, <r8=>0xffffffffffffffff}, 0x0)",
+				"r9 = syscall$des(0x0, r5, r6, r7, r8, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 pipe tag + 1 res match + 1 pipe match",
+			syzllmCall: "epoll_ctl$SyzLLM(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"epoll_ctl$SyzLLM(r1, 0x2, r2, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+		},
+		{
+			name:       "1 res tag + 1 pipe tag + 1 res match + syzllmCall has Prov",
+			syzllmCall: "r0 = llm(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x0)",
+				"multi(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)"},
+			idx: 3,
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x0)",
+				"multi(&(0x7f0000000040)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x0)",
+				"pipe2(&(0x7f0000000240)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x80800)",
+				"r6 = llm(r1, 0x2, r4, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r7 = sendto$llc(0x2)",
+				"r8 = openat(0x7ffff, r7, r0, r1)",
+				"writev$SyzLLM(0xb, r7, r8)",
+				"pipe2$9p(&(0x7f0000000040)={<r9=>0xffffffffffffffff, <r10=>0xffffffffffffffff}, 0x0)",
+				"r11 = syscall$des(0x0, r7, r8, r9, r10, r0, r1)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ParseResource(tt.calls, tt.idx, tt.syzllmCall)
+			if !AssertSlicesAreEqual(result, tt.expected) {
+				t.Errorf("ParseResource = \n%v\n; want \n%v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseResTag(t *testing.T) {
+	tests := []struct {
+		name     string
+		call     string
+		expected []string
+	}{
+		{
+			name: "1 res tag",
+			call: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}], 0x1, 0x2710)",
+			expected: []string{
+				"r0 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r0}], 0x1, 0x2710)"},
+		},
+		{
+			name: "2 res tags",
+			call: "poll$SyzLLM(&(0x7f0000080000)=[{@RSTART@socket$SyzLLM(0x10, 0x3, 0x0)@REND@}, {@RSTART@openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)@REND@}], 0x2, 0x0)",
+			expected: []string{
+				"r0 = socket$SyzLLM(0x10, 0x3, 0x0)",
+				"r1 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"poll$SyzLLM(&(0x7f0000080000)=[{r0}, {r1}], 0x2, 0x0)"},
+		},
+		{
+			name: "1 res tag + 1 pipe tag",
+			call: "epoll_ctl$SyzLLM(@RSTART@epoll_create1$SyzLLM(0x80000)@REND@, 0x2, @PIPESTART@pipe2(&(0x7f0000000240)={<r0=>0xffffffffffffffff, <r1=>0xffffffffffffffff}, 0x80800)@PIPEEND@, &(0x7f000003a000)={0x1, 0x6})",
+			expected: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseResTag(tt.call)
+			if !AssertSlicesAreEqual(result, tt.expected) {
+				t.Errorf("parseResTag(%q) = %v; want %v", tt.call, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestInsertSyzllmCalls(t *testing.T) {
+	tests := []struct {
+		name        string
+		calls       []string
+		insertPos   int
+		syzllmCalls []string
+		expected    []string
+	}{
+		{
+			name: "no res prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"[MASK]", // [MASK]
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+			},
+			insertPos: 3,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r4=>0xffffffffffffffff, <r5=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r3, 0x2, r4, &(0x7f000003a000)={0x1, 0x6})",
+				"r6 = sendto$llc(0x2)",
+				"r7 = openat(0x7ffff, r6, r0, r1)",
+				"writev$SyzLLM(0xb, r6, r7)",
+				"pipe2$9p(&(0x7f0000000040)={<r8=>0xffffffffffffffff, <r9=>0xffffffffffffffff}, 0x0)",
+				"r10 = syscall$des(0x0, r6, r7, r8, r9, r0, r1)",
+			},
+		},
+		{
+			name: "1 normal res prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"[MASK]", // [MASK]
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+			},
+			insertPos: 3,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"pipe2(&(0x7f0000000240)={<r3=>0xffffffffffffffff, <r4=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r1, 0x2, r3, &(0x7f000003a000)={0x1, 0x6})",
+				"r5 = sendto$llc(0x2)",
+				"r6 = openat(0x7ffff, r5, r0, r1)",
+				"writev$SyzLLM(0xb, r5, r6)",
+				"pipe2$9p(&(0x7f0000000040)={<r7=>0xffffffffffffffff, <r8=>0xffffffffffffffff}, 0x0)",
+				"r9 = syscall$des(0x0, r5, r6, r7, r8, r0, r1)",
+			},
+		},
+		{
+			name: "all match: 1 normal res prov + 1 pipe res prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x80800)",
+				"[MASK]", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)",
+			},
+			insertPos: 3,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r1, 0x2, r2, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r4 = sendto$llc(0x2)",
+				"r5 = openat(0x7ffff, r4, r0, r1)",
+				"writev$SyzLLM(0xb, r4, r5)",
+				"pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+				"r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)",
+			},
+		},
+		{
+			name: "insert to beginning",
+			calls: []string{
+				"[MASK]", // [MASK]
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+			},
+			insertPos: 0,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+				"r3 = read$desc(&(0x7ffffff)=\"0\")",
+				"r4 = dup(r3)",
+				"r5 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r6 = sendto$llc(0x2)",
+				"r7 = openat(0x7ffff, r6, r3, r4)",
+				"writev$SyzLLM(0xb, r6, r7)",
+				"pipe2$9p(&(0x7f0000000040)={<r8=>0xffffffffffffffff, <r9=>0xffffffffffffffff}, 0x0)",
+				"r10 = syscall$des(0x0, r6, r7, r8, r9, r3, r4)",
+			},
+		},
+		{
+			name: "insert to end - no prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"syscall$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"[MASK]", // [MASK]
+			},
+			insertPos: 8,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"syscall$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"r8 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r9=>0xffffffffffffffff, <r10=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r8, 0x2, r9, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+			},
+		},
+		{
+			name: "insert to end - 1 normal prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = epoll_create1$SyzLLM(0x80000)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"syscall$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"[MASK]", // [MASK]
+			},
+			insertPos: 8,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = epoll_create1$SyzLLM(0x80000)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"syscall$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"pipe2(&(0x7f0000000240)={<r8=>0xffffffffffffffff, <r9=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r3, 0x2, r8, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+			},
+		},
+		{
+			name: "insert to end - 1 pipe prov",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"[MASK]", // [MASK]
+			},
+			insertPos: 8,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = sendto$llc(0x2)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"r8 = epoll_create1$SyzLLM(0x80000)",
+				"epoll_ctl$SyzLLM(r8, 0x2, r5, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+			},
+		},
+		{
+			name: "insert to end - all prov exist",
+			calls: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = epoll_create1$SyzLLM(0x80000)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"[MASK]", // [MASK]
+			},
+			insertPos: 8,
+			syzllmCalls: []string{
+				"r0 = epoll_create1$SyzLLM(0x80000)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"r0 = read$desc(&(0x7ffffff)=\"0\")",
+				"r1 = dup(r0)",
+				"r2 = openat$SyzLLM(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r3 = epoll_create1$SyzLLM(0x80000)",
+				"r4 = openat(0x7ffff, r3, r0, r1)",
+				"writev$SyzLLM(0xb, r3, r4)",
+				"pipe2$9p(&(0x7f0000000040)={<r5=>0xffffffffffffffff, <r6=>0xffffffffffffffff}, 0x0)",
+				"r7 = syscall$des(0x0, r3, r4, r5, r6, r0, r1)",
+				"epoll_ctl$SyzLLM(r3, 0x2, r5, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := insertSyzllmCalls(tt.calls, tt.insertPos, tt.syzllmCalls)
+			if !AssertSlicesAreEqual(result, tt.expected) {
+				t.Errorf("removeExistingResProvider = \n%v\n; want \n%v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractCallName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "r0 = read$desc(&(0x7ffffff)=\"0\")",
+			expected: "read",
+		},
+		{
+			input:    "r1 = epoll_create1$SyzLLM(0x80000)",
+			expected: "epoll_create1",
+		},
+		{
+			input:    "pipe2(&(0x7f0000000240)={<r2=>0xffffffffffffffff, <r3=>0xffffffffffffffff}, 0x80800)",
+			expected: "pipe2",
+		},
+		{
+			input:    "epoll_ctl$SyzLLM(r1, 0x2, r2, &(0x7f000003a000)={0x1, 0x6})",
+			expected: "epoll_ctl",
+		},
+		{
+			input:    "r4 = sendto$llc(0x2)",
+			expected: "sendto",
+		},
+		{
+			input:    "r5 = openat(0x7ffff, r4, r0, r1)",
+			expected: "openat",
+		},
+		{
+			input:    "writev$SyzLLM(0xb, r4, r5)",
+			expected: "writev",
+		},
+		{
+			input:    "pipe2$9p(&(0x7f0000000040)={<r6=>0xffffffffffffffff, <r7=>0xffffffffffffffff}, 0x0)",
+			expected: "pipe2",
+		},
+		{
+			input:    "r8 = syscall$des(0x0, r4, r5, r6, r7, r0, r1)",
+			expected: "syscall",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := extractCallName(tt.input)
+			if result != tt.expected {
+				t.Errorf("extractCallName(%q) = %q; want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractFirstResProvider(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "r0 = epoll_create1$SyzLLM(0x80000)",
+			expected: "r0",
+		},
+		{
+			input:    "pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+			expected: "r1",
+		},
+		{
+			input:    "",
+			expected: "",
+		},
+		{
+			input:    "no_resource_tag()",
+			expected: "",
+		},
+		{
+			input:    "r3 = invalid<no_tag>",
+			expected: "r3",
+		},
+		{
+			input:    "<r4=>0x0, <r5=>0x0}",
+			expected: "r4",
+		},
+		{
+			input:    "r6=malformed",
+			expected: "r6",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := extractFirstResProvider(tt.input)
+			if result != tt.expected {
+				t.Errorf("extractFirstResourceTag(%q) = %q; want %q", tt.input, result, tt.expected)
 			}
 		})
 	}

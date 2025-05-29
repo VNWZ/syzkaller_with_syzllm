@@ -7,10 +7,8 @@ import (
 	"strings"
 )
 
-// todo: impl ParseResource
-func ParseResource(syzllmCall string, calls []string, insertPosition int) []string {
-	calls[insertPosition] = syzllmCall
-
+// calls[insertPosition] should be "[MASK]" at the beginning
+func ParseResource(calls []string, insertPosition int, syzllmCall string) []string {
 	// no res tag to parse but has res provider
 	if !hasResTag(syzllmCall) {
 		if countResProvider(syzllmCall) > 0 {
@@ -19,9 +17,193 @@ func ParseResource(syzllmCall string, calls []string, insertPosition int) []stri
 		return calls
 	}
 
-	// todo: update nested res
-	// every loop process a most outside res tag, after parsing all res tags then insert them to calls
-	return calls // temp
+	// 1. parsedSyzllmCalls
+	parsedSyzllmCalls := parseResTag(syzllmCall)
+	// 2. check and insert one by one
+	result := insertSyzllmCalls(calls, insertPosition, parsedSyzllmCalls)
+
+	return result
+}
+
+func parseResTag(syzllmCall string) []string {
+	result := []string{}
+	N := 0
+	modified := strings.Builder{}
+	pos := 0
+
+	for pos < len(syzllmCall) {
+		rStart := strings.Index(syzllmCall[pos:], RPrefix)
+		if rStart != -1 {
+			rStart += pos
+		}
+		pipeStart := strings.Index(syzllmCall[pos:], PIPEPrefix)
+		if pipeStart != -1 {
+			pipeStart += pos
+		}
+
+		if rStart == -1 && pipeStart == -1 {
+			break
+		}
+
+		// determine which type is first
+		var startPos int
+		var tagType string
+		if rStart != -1 && (pipeStart == -1 || rStart < pipeStart) {
+			startPos = rStart
+			tagType = "res"
+		} else {
+			startPos = pipeStart
+			tagType = "pipe"
+		}
+
+		var startTag, endTag string
+		if tagType == "res" {
+			startTag = RPrefix
+			endTag = RSuffix
+		} else {
+			startTag = PIPEPrefix
+			endTag = PIPESuffix
+		}
+
+		endPos := strings.Index(syzllmCall[startPos+len(startTag):], endTag)
+		if endPos == -1 {
+			panic("No matching end tag")
+		}
+		endPos += startPos + len(startTag)
+
+		substring := syzllmCall[startPos+len(startTag) : endPos]
+
+		// start process the first res tag
+		if tagType == "res" {
+			result = append(result, fmt.Sprintf("r%d = %s", N, substring))
+			modified.WriteString(syzllmCall[pos:startPos])
+			modified.WriteString(fmt.Sprintf("r%d", N))
+			N++
+		} else { // pipe tag
+			re := regexp.MustCompile(`<r\d+=>`)
+			matches := re.FindAllStringIndex(substring, -1)
+			k := len(matches)
+			if k == 0 {
+				panic("No placeholders in pipe tag")
+			}
+			firstN := N
+			updatedSubstring := substring
+			for i := 0; i < len(matches); i++ {
+				matchStart := matches[i][0]
+				matchEnd := matches[i][1]
+				updatedSubstring = updatedSubstring[:matchStart] + fmt.Sprintf("<r%d=>", N) + updatedSubstring[matchEnd:]
+				N++
+			}
+			result = append(result, updatedSubstring)
+			modified.WriteString(syzllmCall[pos:startPos])
+			modified.WriteString(fmt.Sprintf("r%d", firstN))
+		}
+
+		pos = endPos + len(endTag)
+	}
+
+	modified.WriteString(syzllmCall[pos:])
+	result = append(result, modified.String())
+	return result
+}
+
+func insertSyzllmCalls(calls []string, insertPos int, syzllmCalls []string) []string {
+	result := make([]string, len(calls))
+	copy(result, calls)
+
+	cursor := insertPos
+
+	tagMap := make(map[string]string)
+
+	syzllmCallsSize := len(syzllmCalls)
+	// if produced resource
+	if syzllmCallsSize > 1 {
+		for _, call := range syzllmCalls[0 : syzllmCallsSize-1] {
+			resCount := hasCallName(result, 0, cursor, call)
+			if resCount >= 0 {
+				syzllmCallResNum := extractFirstResProvider(call)
+				tagMap[syzllmCallResNum[1:]] = strconv.Itoa(resCount)
+			} else {
+				result, _ = enlargeSlice(result, cursor)
+				insertCallNoResTag(result, cursor, call)
+				oldResNum := extractFirstResProvider(call)
+				updatedResNum := extractFirstResProvider(result[cursor])
+				tagMap[oldResNum[1:]] = updatedResNum[1:]
+
+				cursor += 1
+			}
+		}
+	}
+
+	// update res by tagMap
+	sortedKeys := SortedMapKeysDesc(tagMap)
+	// Update the same res prov numbers in subsequent strings
+	for _, k := range sortedKeys {
+		oldResNum := "r" + k
+		updatedResNum := "r" + tagMap[k]
+		syzllmCalls[syzllmCallsSize-1] = strings.Replace(syzllmCalls[syzllmCallsSize-1], oldResNum+",", updatedResNum+",", -1)
+		syzllmCalls[syzllmCallsSize-1] = strings.Replace(syzllmCalls[syzllmCallsSize-1], oldResNum+")", updatedResNum+")", -1)
+		syzllmCalls[syzllmCallsSize-1] = strings.Replace(syzllmCalls[syzllmCallsSize-1], oldResNum+"}", updatedResNum+"}", -1)
+	}
+
+	insertCallNoResTag(result, cursor, syzllmCalls[syzllmCallsSize-1])
+	return result
+}
+
+func hasCallName(calls []string, start int, end int, syzllmCall string) int {
+	for i := start; i < end; i++ {
+		if extractCallName(calls[i]) == extractCallName(syzllmCall) {
+			ret, _ := strconv.Atoi(extractFirstResProvider(calls[i])[1:])
+			return ret
+		}
+	}
+	return -1
+}
+
+func extractCallName(call string) string {
+	// Find the position of the first '$' or '('
+	end := len(call)
+	for i, c := range call {
+		if c == '$' || c == '(' {
+			end = i
+			break
+		}
+	}
+
+	// Extract the substring up to the found position
+	result := call[:end]
+
+	// If the string contains '=', trim up to and including '='
+	if idx := strings.Index(result, "="); idx != -1 {
+		result = strings.TrimSpace(result[idx+1:])
+	}
+
+	return result
+}
+
+func extractFirstResProvider(call string) string {
+	// Check if the string starts with a resource tag (e.g., "rX =")
+	if idx := strings.Index(call, "="); idx != -1 && idx > 1 && call[0] == 'r' {
+		return strings.TrimSpace(call[:idx])
+	}
+
+	// Look for resource tags in the format <rX=...> within the string
+	start := strings.Index(call, "<r")
+	if start == -1 {
+		return ""
+	}
+	end := strings.Index(call[start:], ">")
+	if end == -1 {
+		return ""
+	}
+	end += start
+
+	// Extract the first resource tag (e.g., "r1" from "<r1=...")
+	tag := call[start+1 : end]
+	if idx := strings.Index(tag, "="); idx != -1 {
+		return tag[:idx]
+	}
+	return tag
 }
 
 func hasResTag(call string) bool {
@@ -51,7 +233,7 @@ func hasPipeTag(call string) bool {
 
 func assertNoResToParse(call string) {
 	if hasResTag(call) {
-		panic("Count Res Provider Must be in a cal without any res need to parse\nCall: " + call)
+		panic("Count Res Provider Must be in a call without any res need to parse\nCall: " + call)
 	}
 }
 
