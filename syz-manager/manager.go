@@ -367,6 +367,10 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	mgr.http.ReproLoop = mgr.reproLoop
 	mgr.http.TogglePause = mgr.pool.TogglePause
 
+	// syzllm start: verify all tokens can be deserialized, must turn off when fuzzing
+	prog.VerifyCallsFrom("/root/data/vocab.txt", mgr.target)
+	// syzllm end
+
 	if mgr.cfg.HTTP != "" {
 		go func() {
 			err := mgr.http.Serve(ctx)

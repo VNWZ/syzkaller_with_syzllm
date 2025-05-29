@@ -1,12 +1,16 @@
 package prog
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"github.com/google/syzkaller/pkg/log"
 	syzllm_pkg2 "github.com/google/syzkaller/pkg/syzllm_pkg"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
 func newSyzllm(prog *Prog, insertPosition int, choiceTable *ChoiceTable) syzllm {
@@ -108,7 +112,7 @@ func (s *baseSyzllm) request() {
 
 func (s *baseSyzllm) processSyzLLMCall() {
 	s.syzllmCall = syzllm_pkg2.ProcessDescriptor(s.syzllmCall)
-	resultCalls := syzllm_pkg2.ParseResource(s.syzllmCall, s.callListWithMask, s.insertPosition)
+	resultCalls := syzllm_pkg2.ParseResource(s.callListWithMask, s.insertPosition, s.syzllmCall)
 
 	resultText := ""
 	for _, call := range resultCalls {
@@ -135,4 +139,62 @@ func (s *baseSyzllm) parseProgToSlice() []string {
 	}
 
 	return syscallList
+}
+
+func VerifyCallsFrom(path string, target *Target) {
+	dummyProg := &Prog{
+		Target:   target,
+		Calls:    make([]*Call, 0),
+		Comments: make([]string, 0),
+		isUnsafe: false,
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+
+	// for debug attaching
+	time.Sleep(20 * time.Second)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			log.Fatal(err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+
+		excludeCalls := []string{"newstat", "access", "newlstat", "clone"}
+		for _, substr := range excludeCalls {
+			if strings.Contains(line, substr) {
+				continue
+			}
+		}
+
+		line = syzllm_pkg2.ProcessDescriptor(line)
+
+		newCall := line
+		maskedSyscallList := make([]string, 1)
+		maskedSyscallList[0] = "[MASK]"
+		calls := syzllm_pkg2.ParseResource(maskedSyscallList, 0, newCall)
+		newSyscallSequence := ""
+		for _, call := range calls {
+			if len(newSyscallSequence) > 0 {
+				newSyscallSequence += "\n"
+			}
+			newSyscallSequence += call
+		}
+		newSyscallBytes := []byte(newSyscallSequence)
+		_, err = dummyProg.Target.Deserialize(newSyscallBytes, NonStrict)
+		if err != nil {
+			log.Logf(0, newCall, err)
+		}
+	}
+	log.Fatalf("Verify done")
 }
