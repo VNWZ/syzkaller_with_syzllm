@@ -190,6 +190,7 @@ func VerifyCallsFrom(path string, target *Target) {
 			}
 			newSyscallSequence += call
 		}
+		log.Logf(0, newSyscallSequence)
 		newSyscallBytes := []byte(newSyscallSequence)
 		_, err = dummyProg.Target.Deserialize(newSyscallBytes, NonStrict)
 		if err != nil {
