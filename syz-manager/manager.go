@@ -368,7 +368,7 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	mgr.http.TogglePause = mgr.pool.TogglePause
 
 	// syzllm start: verify all tokens can be deserialized, must turn off when fuzzing
-	prog.VerifyCallsFrom("/root/data/vocab.txt", mgr.target)
+	prog.VerifyCallsFrom("/home/parallels/fuzz/vocab.txt", mgr.target)
 	// syzllm end
 
 	if mgr.cfg.HTTP != "" {
