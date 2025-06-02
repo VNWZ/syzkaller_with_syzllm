@@ -9,10 +9,12 @@ import (
 
 // calls[insertPosition] should be "[MASK]" at the beginning
 func ParseResource(calls []string, insertPosition int, syzllmCall string) []string {
-	// no res tag to parse but has res provider
+	// new call has no res tag to parse but has res provider
 	if !hasResTag(syzllmCall) {
 		if countResProvider(syzllmCall) > 0 {
 			insertCallNoResTag(calls, insertPosition, syzllmCall)
+		} else {
+			calls[insertPosition] = syzllmCall
 		}
 		return calls
 	}
