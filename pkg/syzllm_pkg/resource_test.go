@@ -884,6 +884,13 @@ func TestParseResource(t *testing.T) {
 				"pipe2$9p(&(0x7f0000000040)={<r9=>0xffffffffffffffff, <r10=>0xffffffffffffffff}, 0x0)",
 				"r11 = syscall$des(0x0, r7, r8, r9, r10, r0, r1)"},
 		},
+		{
+			name:       "1 normal call",
+			syzllmCall: "bpf$MAP_CREATE(0x0, &(0x7f0000002040)=ANY=[@ANYBLOB], 0x48)",
+			calls:      []string{"[MASK]"},
+			idx:        0,
+			expected:   []string{"bpf$MAP_CREATE(0x0, &(0x7f0000002040)=ANY=[@ANYBLOB], 0x48)"},
+		},
 	}
 
 	for _, tt := range tests {
