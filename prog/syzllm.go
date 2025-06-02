@@ -190,11 +190,11 @@ func VerifyCallsFrom(path string, target *Target) {
 			}
 			newSyscallSequence += call
 		}
-		log.Logf(0, newSyscallSequence)
+		log.Logf(0, "parsed calls: %s", newSyscallSequence)
 		newSyscallBytes := []byte(newSyscallSequence)
 		_, err = dummyProg.Target.Deserialize(newSyscallBytes, NonStrict)
 		if err != nil {
-			log.Logf(0, newCall, err)
+			log.Logf(0, "invlid calls: "+newCall, err)
 		}
 	}
 	log.Fatalf("Verify done")
