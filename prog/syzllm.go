@@ -170,13 +170,6 @@ func VerifyCallsFrom(path string, target *Target) {
 		}
 		line = strings.TrimSuffix(line, "\n")
 
-		excludeCalls := []string{"newstat", "access", "newlstat", "clone"}
-		for _, substr := range excludeCalls {
-			if strings.Contains(line, substr) {
-				continue
-			}
-		}
-
 		line = syzllm_pkg2.ProcessDescriptor(line)
 
 		newCall := line
@@ -190,7 +183,6 @@ func VerifyCallsFrom(path string, target *Target) {
 			}
 			newSyscallSequence += call
 		}
-		log.Logf(0, "parsed calls: %s", newSyscallSequence)
 		newSyscallBytes := []byte(newSyscallSequence)
 		_, err = dummyProg.Target.Deserialize(newSyscallBytes, NonStrict)
 		if err != nil {
