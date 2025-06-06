@@ -170,13 +170,6 @@ func VerifyCallsFrom(path string, target *Target) {
 		}
 		line = strings.TrimSuffix(line, "\n")
 
-		excludeCalls := []string{"newstat", "access", "newlstat", "clone"}
-		for _, substr := range excludeCalls {
-			if strings.Contains(line, substr) {
-				continue
-			}
-		}
-
 		line = syzllm_pkg2.ProcessDescriptor(line)
 
 		newCall := line
@@ -193,7 +186,7 @@ func VerifyCallsFrom(path string, target *Target) {
 		newSyscallBytes := []byte(newSyscallSequence)
 		_, err = dummyProg.Target.Deserialize(newSyscallBytes, NonStrict)
 		if err != nil {
-			log.Logf(0, newCall, err)
+			log.Logf(0, "invlid calls: "+newCall, err)
 		}
 	}
 	log.Fatalf("Verify done")
