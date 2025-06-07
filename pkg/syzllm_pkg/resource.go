@@ -123,10 +123,10 @@ func insertSyzllmCalls(calls []string, insertPos int, syzllmCalls []string) []st
 		// check if every res that the syzllm call needed appears in calls before insertPos
 		for _, call := range syzllmCalls[0 : syzllmCallsSize-1] {
 			// get the first-appear res
-			resCount := hasCallName(result, 0, cursor, call)
-			if resCount >= 0 {
+			resProvNum := lookUpResProvider(result, 0, cursor, call)
+			if resProvNum >= 0 {
 				syzllmCallResNum := extractFirstResProvider(call)
-				tagMap[syzllmCallResNum[1:]] = strconv.Itoa(resCount)
+				tagMap[syzllmCallResNum[1:]] = strconv.Itoa(resProvNum)
 			} else {
 				result, _ = enlargeSlice(result, cursor)
 				insertCallNoResTag(result, cursor, call)
@@ -154,9 +154,9 @@ func insertSyzllmCalls(calls []string, insertPos int, syzllmCalls []string) []st
 	return result
 }
 
-func hasCallName(calls []string, start int, end int, syzllmCall string) int {
+func lookUpResProvider(calls []string, start int, end int, syzllmCall string) int {
 	for i := start; i < end; i++ {
-		if extractCallName(calls[i]) == extractCallName(syzllmCall) {
+		if extractCallName(calls[i]) == extractCallName(syzllmCall) && countResProvider(calls[i]) > 0 {
 			ret, _ := strconv.Atoi(extractFirstResProvider(calls[i])[1:])
 			return ret
 		}
