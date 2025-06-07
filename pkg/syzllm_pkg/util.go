@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var SyzllmProbabilityFuzzer = 0.3
+var SyzllmProbabilityFuzzer = 0.35
 var MutationSelectionRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type SyscallRequestData struct {
