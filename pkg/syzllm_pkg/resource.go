@@ -120,7 +120,9 @@ func insertSyzllmCalls(calls []string, insertPos int, syzllmCalls []string) []st
 	syzllmCallsSize := len(syzllmCalls)
 	// if produced resource
 	if syzllmCallsSize > 1 {
+		// check if every res that the syzllm call needed appears in calls before insertPos
 		for _, call := range syzllmCalls[0 : syzllmCallsSize-1] {
+			// get the first-appear res
 			resCount := hasCallName(result, 0, cursor, call)
 			if resCount >= 0 {
 				syzllmCallResNum := extractFirstResProvider(call)
