@@ -2,6 +2,7 @@ package syzllm_pkg
 
 import (
 	"fmt"
+	"github.com/google/syzkaller/pkg/log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -155,7 +156,11 @@ func insertSyzllmCalls(calls []string, insertPos int, syzllmCalls []string) []st
 func hasCallName(calls []string, start int, end int, syzllmCall string) int {
 	for i := start; i < end; i++ {
 		if extractCallName(calls[i]) == extractCallName(syzllmCall) {
-			ret, _ := strconv.Atoi(extractFirstResProvider(calls[i])[1:])
+			resProvider := extractFirstResProvider(calls[i])
+			if len(resProvider) <= 1 {
+				log.Errorf("Failed to extract res prov from %s, syzllm call %s", calls[i], syzllmCall)
+			}
+			ret, _ := strconv.Atoi(resProvider[1:])
 			return ret
 		}
 	}
