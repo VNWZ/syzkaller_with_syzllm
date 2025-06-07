@@ -4,7 +4,7 @@ import "fmt"
 
 type ServerInfo struct {
 	Host     string
-	Port     int
+	Port     string
 	Hostname string
 	Env      string
 }
@@ -12,13 +12,13 @@ type ServerInfo struct {
 var configs = map[string]ServerInfo{
 	"test": {
 		Host:     "10.211.55.4",
-		Port:     6678,
+		Port:     "6678",
 		Hostname: "parallels",
 		Env:      "test",
 	},
 	"prod": {
 		Host:     "",
-		Port:     443,
+		Port:     "443",
 		Hostname: "RIPPLE",
 		Env:      "prod",
 	},
