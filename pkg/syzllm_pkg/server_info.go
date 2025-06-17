@@ -11,14 +11,14 @@ type ServerInfo struct {
 
 var configs = map[string]ServerInfo{
 	"test": {
-		Host:     "10.211.55.4",
+		Host:     "127.0.0.1",
 		Port:     "6678",
 		Hostname: "parallels",
 		Env:      "test",
 	},
 	"prod": {
-		Host:     "",
-		Port:     "443",
+		Host:     "127.0.0.1",
+		Port:     "6678",
 		Hostname: "RIPPLE",
 		Env:      "prod",
 	},
