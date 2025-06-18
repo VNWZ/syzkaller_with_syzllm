@@ -1138,6 +1138,7 @@ var linuxStackParams = &stackParams{
 		"krealloc",
 		"kmem_cache",
 		"allocate_slab",
+		"__alloc_frozen_pages_noprof",
 		"folio_(?:alloc|unlock)",
 		"filemap_alloc_folio",
 		"__filemap_get_folio",
@@ -1833,6 +1834,11 @@ var linuxOopses = append([]*oops{
 			},
 			{
 				title: compile("WARNING: .* at {{SRC}} {{FUNC}}"),
+				fmt:   "WARNING in %[3]v",
+				stack: warningStackFmt(),
+			},
+			{
+				title: compile("WARNING: {{SRC}} at {{FUNC}}"),
 				fmt:   "WARNING in %[3]v",
 				stack: warningStackFmt(),
 			},
