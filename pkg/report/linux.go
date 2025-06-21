@@ -188,10 +188,10 @@ func (ctx *linux) Parse(output []byte) *Report {
 		}
 		rep.reportPrefixLen = len(rep.Report)
 		rep.Report = append(rep.Report, report...)
-		setReportType(rep, oops, format)
-		ctx.setExecutorInfo(rep)
+		rep.setType(format.reportType, oops.defaultReportType)
+		setExecutorInfo(rep)
 		if !rep.Corrupted {
-			rep.Corrupted, rep.CorruptedReason = ctx.isCorrupted(title, report, format)
+			rep.Corrupted, rep.CorruptedReason = isCorrupted(title, report, format)
 		}
 		if rep.CorruptedReason == corruptedNoFrames && context != contextConsole && !questionable {
 			// We used to look at questionable frame with the following incentive:
@@ -898,7 +898,7 @@ func getMaintainersImpl(kernelSrc, file string, blame bool) (vcs.Recipients, err
 	return vcs.ParseMaintainersLinux(output), nil
 }
 
-func (ctx *linux) isCorrupted(title string, report []byte, format oopsFormat) (bool, string) {
+func isCorrupted(title string, report []byte, format oopsFormat) (bool, string) {
 	// Check for common title corruptions.
 	for _, re := range linuxCorruptedTitles {
 		if re.MatchString(title) {
@@ -954,7 +954,7 @@ func (ctx *linux) isCorrupted(title string, report []byte, format oopsFormat) (b
 
 var syzLinuxCommRe = regexp.MustCompile(` Comm: syz\.(\d+)\.(\d+) `)
 
-func (ctx *linux) setExecutorInfo(rep *Report) {
+func setExecutorInfo(rep *Report) {
 	match := syzLinuxCommRe.FindSubmatch(rep.Report)
 	if match == nil {
 		return
@@ -1499,6 +1499,7 @@ var linuxOopses = append([]*oops{
 					skip: []string{"alloc_skb", "usb_submit_urb", "usb_start_wait_urb", "usb_bulk_msg", "usb_interrupt_msg", "usb_control_msg"},
 				},
 				noStackTrace: true,
+				reportType:   crash.KMSAN,
 			},
 			{
 				title:  compile("BUG: KMSAN:"),
@@ -1516,6 +1517,7 @@ var linuxOopses = append([]*oops{
 					skip: []string{"alloc_skb", "netlink_ack", "netlink_rcv_skb"},
 				},
 				noStackTrace: true,
+				reportType:   crash.KMSAN,
 			},
 			{
 				title:        compile("BUG: KCSAN: data-race"),
@@ -2306,6 +2308,27 @@ var linuxOopses = append([]*oops{
 				stack: &stackFmt{
 					parts: []*regexp.Regexp{
 						linuxRipFrame,
+					},
+				},
+			},
+		},
+		[]*regexp.Regexp{},
+		crash.UnknownType,
+	},
+	{
+		[]byte("rust_kernel: panicked"),
+		[]oopsFormat{
+			{
+				title:  compile("rust_kernel: panicked"),
+				report: compile("rust_kernel: panicked at [^\n]*?\n(.+?)\n"),
+				fmt:    "%[1]v in %[2]v",
+				stack: &stackFmt{
+					parts: []*regexp.Regexp{
+						linuxCallTrace,
+						parseStackTrace,
+					},
+					skip: []string{
+						regexp.QuoteMeta(`__rustc::rust_begin_unwind`),
 					},
 				},
 			},
