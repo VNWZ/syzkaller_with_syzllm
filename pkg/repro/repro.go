@@ -33,6 +33,9 @@ type Result struct {
 	// Information about the final (non-symbolized) crash that we reproduced.
 	// Can be different from what we started reproducing.
 	Report *report.Report
+	// A very rough estimate of the probability with which the resulting syz
+	// reproducer crashes the kernel.
+	Reliability float64
 }
 
 type Stats struct {
@@ -78,10 +81,12 @@ type Environment struct {
 	// The Fast repro mode restricts the repro log bisection,
 	// it skips multiple simpifications and C repro generation.
 	Fast bool
+
+	logf func(string, ...interface{})
 }
 
 func Run(ctx context.Context, log []byte, env Environment) (*Result, *Stats, error) {
-	return runInner(ctx, log, env.Config, env.Features, env.Reporter, env.Fast, &poolWrapper{
+	return runInner(ctx, log, env, &poolWrapper{
 		cfg:      env.Config,
 		reporter: env.Reporter,
 		pool:     env.Pool,
@@ -90,8 +95,8 @@ func Run(ctx context.Context, log []byte, env Environment) (*Result, *Stats, err
 
 var ErrEmptyCrashLog = errors.New("no programs")
 
-func runInner(ctx context.Context, crashLog []byte, cfg *mgrconfig.Config, features flatrpc.Feature,
-	reporter *report.Reporter, fast bool, exec execInterface) (*Result, *Stats, error) {
+func runInner(ctx context.Context, crashLog []byte, env Environment, exec execInterface) (*Result, *Stats, error) {
+	cfg := env.Config
 	entries := cfg.Target.ParseLog(crashLog, prog.NonStrict)
 	if len(entries) == 0 {
 		return nil, nil, fmt.Errorf("log (%d bytes) parse failed: %w", len(crashLog), ErrEmptyCrashLog)
@@ -99,7 +104,7 @@ func runInner(ctx context.Context, crashLog []byte, cfg *mgrconfig.Config, featu
 	crashStart := len(crashLog)
 	crashTitle, crashType := "", crash.UnknownType
 	var crashExecutor *report.ExecutorInfo
-	if rep := reporter.Parse(crashLog); rep != nil {
+	if rep := env.Reporter.Parse(crashLog); rep != nil {
 		crashStart = rep.StartPos
 		crashTitle = rep.Title
 		crashType = rep.Type
@@ -124,7 +129,7 @@ func runInner(ctx context.Context, crashLog []byte, cfg *mgrconfig.Config, featu
 	case crashType == crash.Hang:
 		testTimeouts = testTimeouts[2:]
 	}
-	if fast {
+	if env.Fast {
 		testTimeouts = []time.Duration{30 * time.Second, 5 * time.Minute}
 	}
 	reproCtx := &reproContext{
@@ -138,11 +143,12 @@ func runInner(ctx context.Context, crashLog []byte, cfg *mgrconfig.Config, featu
 
 		entries:        entries,
 		testTimeouts:   testTimeouts,
-		startOpts:      createStartOptions(cfg, features, crashType),
+		startOpts:      createStartOptions(cfg, env.Features, crashType),
 		stats:          new(Stats),
 		timeouts:       cfg.Timeouts,
 		observedTitles: map[string]bool{},
-		fast:           fast,
+		fast:           env.Fast,
+		logf:           env.logf,
 	}
 	return reproCtx.run()
 }
@@ -260,7 +266,47 @@ func (ctx *reproContext) repro() (*Result, error) {
 			}
 		}
 	}
+	// Validate the resulting reproducer - a random rare kernel crash might have diverted the process.
+	res.Reliability, err = calculateReliability(func() (bool, error) {
+		ret, err := ctx.testProg(res.Prog, res.Duration, res.Opts, false)
+		if err != nil {
+			return false, err
+		}
+		ctx.reproLogf(2, "validation run: crashed=%v", ret.Crashed)
+		return ret.Crashed, nil
+	})
+	if err != nil {
+		ctx.reproLogf(2, "could not calculate reliability, err=%v", err)
+		return nil, err
+	}
+
+	const minReliability = 0.15
+	if res.Reliability < minReliability {
+		ctx.reproLogf(1, "reproducer is too unreliable: %.2f", res.Reliability)
+		return nil, err
+	}
+
 	return res, nil
+}
+
+func calculateReliability(cb func() (bool, error)) (float64, error) {
+	const (
+		maxRuns  = 10
+		enoughOK = 3
+	)
+	total := 0
+	okCount := 0
+	for i := 0; i < maxRuns && okCount < enoughOK; i++ {
+		total++
+		ok, err := cb()
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			okCount++
+		}
+	}
+	return float64(okCount) / float64(total), nil
 }
 
 func (ctx *reproContext) extractProg(entries []*prog.LogEntry) (*Result, error) {
@@ -988,4 +1034,16 @@ func (stats *Stats) FullLog() []byte {
 		"Simplifying prog options: %v\nExtracting C: %v\nSimplifying C: %v\n\n\n%s",
 		stats.ExtractProgTime, stats.MinimizeProgTime,
 		stats.SimplifyProgTime, stats.ExtractCTime, stats.SimplifyCTime, stats.Log))
+}
+
+func (repro *Result) CProgram() ([]byte, error) {
+	cprog, err := csource.Write(repro.Prog, repro.Opts)
+	if err == nil {
+		formatted, err := csource.Format(cprog)
+		if err == nil {
+			return formatted, nil
+		}
+		return cprog, nil
+	}
+	return nil, err
 }
