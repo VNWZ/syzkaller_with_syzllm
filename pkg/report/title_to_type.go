@@ -13,6 +13,86 @@ var titleToType = []struct {
 }{
 	{
 		includePrefixes: []string{
+			"KMSAN: uninit-value",
+		},
+		crashType: crash.KMSANUninitValue,
+	},
+	{
+		includePrefixes: []string{
+			// keep-sorted start
+			"KMSAN: kernel-infoleak-after-free",
+			"KMSAN: kernel-usb-infoleak-after-free",
+			"KMSAN: use-after-free",
+			// keep-sorted end
+		},
+		crashType: crash.KMSANUseAfterFreeRead,
+	},
+	{
+		includePrefixes: []string{
+			"KMSAN: kernel-infoleak",
+			"KMSAN: kernel-usb-infoleak",
+		},
+		crashType: crash.KMSANInfoLeak,
+	},
+	{
+		includePrefixes: []string{
+			// keep-sorting start
+			"KASAN: global-out-of-bounds Write",
+			"KASAN: null-ptr-deref Write",
+			"KASAN: out-of-bounds Write",
+			"KASAN: slab-out-of-bounds Write",
+			"KASAN: stack-out-of-bounds Write",
+			"KASAN: user-memory-access Write",
+			"KASAN: vmalloc-out-of-bounds Write",
+			"KASAN: wild-memory-access Write",
+			// keep-sorting end
+		},
+		crashType: crash.KASANWrite,
+	},
+	{
+		includePrefixes: []string{
+			// keep-sorting start
+			"KASAN: global-out-of-bounds Read",
+			"KASAN: invalid-access Read",
+			"KASAN: null-ptr-deref Read",
+			"KASAN: out-of-bounds Read",
+			"KASAN: slab-out-of-bounds Read",
+			"KASAN: slab-out-of-bounds", // Read/Write is not clear. It is at least Read.
+			"KASAN: stack-out-of-bounds Read",
+			"KASAN: stack-out-of-bounds", // Read/Write is not clear. It is at least Read.
+			"KASAN: unknown-crash Read",
+			"KASAN: user-memory-access Read",
+			"KASAN: vmalloc-out-of-bounds Read",
+			"KASAN: wild-memory-access Read",
+			"KASAN: wild-memory-access", // Read/Write is not clear. It is at least Read.
+			// keep-sorting end
+		},
+		crashType: crash.KASANRead,
+	},
+	{
+		includePrefixes: []string{
+			"KASAN: double-free or invalid-free",
+			"KASAN: invalid-free",
+		},
+		crashType: crash.KASANInvalidFree,
+	},
+	{
+		includePrefixes: []string{
+			"KASAN: slab-use-after-free Write",
+			"KASAN: use-after-free Write",
+		},
+		crashType: crash.KASANUseAfterFreeWrite,
+	},
+	{
+		includePrefixes: []string{
+			"KASAN: slab-use-after-free Read",
+			"KASAN: use-after-free Read",
+			"KASAN: use-after-free", // Read/Write is not clear. It is at least Read.
+		},
+		crashType: crash.KASANUseAfterFreeRead,
+	},
+	{
+		includePrefixes: []string{
 			// keep-sorting start
 			"BUG: corrupted list",
 			"BUG: unable to handle kernel paging request",
@@ -35,6 +115,10 @@ var titleToType = []struct {
 	{
 		includePrefixes: []string{"KCSAN: data-race"},
 		crashType:       crash.KCSANDataRace,
+	},
+	{
+		includePrefixes: []string{"KCSAN: assert: race in"},
+		crashType:       crash.KCSANAssert,
 	},
 	{
 		includePrefixes: []string{
@@ -75,7 +159,7 @@ var titleToType = []struct {
 		includePrefixes: []string{
 			// keep-sorted start
 			"BUG: bad usercopy in",
-			"kernel BUG ",
+			"kernel BUG",
 			// keep-sorted end
 		},
 		crashType: crash.Bug,
@@ -120,7 +204,7 @@ var titleToType = []struct {
 			"general protection fault in",
 			"go runtime error",
 			"invalid opcode in",
-			"kernel panic: ",
+			"kernel panic:",
 			"kernel stack overflow",
 			"panic:",
 			"rust_kernel panicked",
@@ -145,31 +229,35 @@ var titleToType = []struct {
 
 	// DEFAULTS.
 	{
-		includePrefixes: []string{"WARNING: "},
+		includePrefixes: []string{"WARNING:"},
 		crashType:       crash.Warning,
 	},
 	{
-		includePrefixes: []string{"BUG: "},
+		includePrefixes: []string{"BUG:"},
 		crashType:       crash.UnknownType,
 	},
 	{
-		includePrefixes: []string{"INFO: "},
+		includePrefixes: []string{"INFO:"},
 		crashType:       crash.UnknownType,
 	},
 	{
-		includePrefixes: []string{"KASAN: "},
-		crashType:       crash.KASAN,
+		includePrefixes: []string{"KASAN:"},
+		crashType:       crash.KASANUnknown,
 	},
 	{
-		includePrefixes: []string{"KFENCE: "},
+		includePrefixes: []string{"KFENCE:"},
 		crashType:       crash.KFENCE,
 	},
 	{
-		includePrefixes: []string{"KMSAN: "},
-		crashType:       crash.KMSAN,
+		includePrefixes: []string{"KMSAN:"},
+		crashType:       crash.KMSANUnknown,
 	},
 	{
-		includePrefixes: []string{"UBSAN: "},
+		includePrefixes: []string{"UBSAN:"},
 		crashType:       crash.UBSAN,
+	},
+	{
+		includePrefixes: []string{"KCSAN:"},
+		crashType:       crash.KCSANUnknown,
 	},
 }
