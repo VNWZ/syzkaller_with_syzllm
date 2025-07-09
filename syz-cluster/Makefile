@@ -23,14 +23,15 @@ $(eval $(call build_image_rules,./controller,controller))
 $(eval $(call build_image_rules,./dashboard,web-dashboard))
 $(eval $(call build_image_rules,./reporter-server,reporter-server))
 $(eval $(call build_image_rules,./series-tracker,series-tracker))
-$(eval $(call build_image_rules,./db-mgmt,db-mgmt))
 $(eval $(call build_image_rules,./email-reporter,email-reporter))
 $(eval $(call build_image_rules,./workflow/triage-step,triage-step))
 $(eval $(call build_image_rules,./workflow/build-step,build-step))
 $(eval $(call build_image_rules,./workflow/fuzz-step,fuzz-step))
 $(eval $(call build_image_rules,./workflow/boot-step,boot-step))
+$(eval $(call build_image_rules,./tools/db-mgmt,db-mgmt))
+$(eval $(call build_image_rules,./tools/send-test-email,send-test-email))
 
-IMAGES := controller web-dashboard reporter-server series-tracker db-mgmt triage-step build-step boot-step fuzz-step
+IMAGES := controller web-dashboard reporter-server series-tracker db-mgmt triage-step build-step boot-step fuzz-step send-test-email
 BUILD_TARGETS := $(addprefix build-, $(IMAGES))
 PUSH_TARGETS := $(addprefix push-, $(IMAGES))
 
@@ -98,7 +99,10 @@ k8s-config-gke: ensure-spanner-database-uri-env ensure-blob-storage-env ensure-w
 	@kubectl kustomize ./overlays/gke/ | sed $(SED_EXPRESSIONS)
 
 migrate-job.yaml:
-	@cat db-mgmt/migrate-job.yaml | sed $(SED_EXPRESSIONS)
+	@cat tools/db-mgmt/migrate-job.yaml | sed $(SED_EXPRESSIONS)
+
+send-test-email-job.yaml:
+	@cat tools/send-test-email/job.yaml | sed $(SED_EXPRESSIONS)
 
 fetch-kernels-once.yaml:
 	@cat kernel-disk/fetch-kernels-once.yaml

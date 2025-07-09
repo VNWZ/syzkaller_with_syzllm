@@ -13,6 +13,7 @@ import (
 	"github.com/google/syzkaller/pkg/email"
 	"github.com/google/syzkaller/syz-cluster/pkg/api"
 	"github.com/google/syzkaller/syz-cluster/pkg/app"
+	"github.com/google/syzkaller/syz-cluster/pkg/emailclient"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -36,22 +37,21 @@ func main() {
 	if cfg.EmailReporting == nil {
 		app.Fatalf("reporting is not configured: %v", err)
 	}
-	sender, err := newSender(ctx, cfg.EmailReporting)
+	sender, err := emailclient.MakeSender(ctx, cfg.EmailReporting)
 	if err != nil {
-		app.Fatalf("failed to create an SMTP sender: %s", err)
+		app.Fatalf("failed to create a sender: %s", err)
 	}
 	reporterClient := app.DefaultReporterClient()
 	handler := &Handler{
 		reporter:    api.LKMLReporter,
 		apiClient:   reporterClient,
 		emailConfig: cfg.EmailReporting,
-		sender:      sender.Send,
+		sender:      sender,
 	}
 	msgCh := make(chan *email.Email, 16)
 	eg, loopCtx := errgroup.WithContext(ctx)
 	if cfg.EmailReporting.LoreArchiveURL != "" {
-		fetcher := NewLKMLEmailStream("/lore-repo",
-			cfg.EmailReporting.LoreArchiveURL, reporterClient, msgCh)
+		fetcher := NewLKMLEmailStream("/lore-repo", reporterClient, cfg.EmailReporting, msgCh)
 		eg.Go(func() error { return fetcher.Loop(loopCtx, fetcherPollPeriod) })
 	}
 	eg.Go(func() error {
