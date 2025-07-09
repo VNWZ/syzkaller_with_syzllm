@@ -28,6 +28,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type ParsedURI struct {
@@ -325,6 +326,8 @@ func (g *genericEntityOps[EntityType, KeyType]) Update(ctx context.Context, key 
 	return err
 }
 
+var errEntityExists = errors.New("entity already exists")
+
 func (g *genericEntityOps[EntityType, KeyType]) Insert(ctx context.Context, obj *EntityType) error {
 	_, err := g.client.ReadWriteTransaction(ctx,
 		func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -334,6 +337,9 @@ func (g *genericEntityOps[EntityType, KeyType]) Insert(ctx context.Context, obj 
 			}
 			return txn.BufferWrite([]*spanner.Mutation{insert})
 		})
+	if status.Code(err) == codes.AlreadyExists {
+		return errEntityExists
+	}
 	return err
 }
 
@@ -342,11 +348,4 @@ func (g *genericEntityOps[EntityType, KeyType]) readEntities(ctx context.Context
 	iter := g.client.Single().Query(ctx, stmt)
 	defer iter.Stop()
 	return readEntities[EntityType](iter)
-}
-
-func (g *genericEntityOps[EntityType, KeyType]) readEntity(ctx context.Context,
-	stmt spanner.Statement) (*EntityType, error) {
-	iter := g.client.Single().Query(ctx, stmt)
-	defer iter.Stop()
-	return readOne[EntityType](iter)
 }

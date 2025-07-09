@@ -21,6 +21,7 @@ import (
 )
 
 type dashboardHandler struct {
+	title           string
 	seriesRepo      *db.SeriesRepository
 	sessionRepo     *db.SessionRepository
 	sessionTestRepo *db.SessionTestRepository
@@ -41,7 +42,12 @@ func newHandler(env *app.AppEnvironment) (*dashboardHandler, error) {
 			return nil, err
 		}
 	}
+	cfg, err := app.Config()
+	if err != nil {
+		return nil, err
+	}
 	return &dashboardHandler{
+		title:           cfg.Name,
 		templates:       perFile,
 		blobStorage:     env.BlobStorage,
 		seriesRepo:      db.NewSeriesRepository(env.Spanner),
@@ -133,7 +139,7 @@ func (h *dashboardHandler) seriesList(w http.ResponseWriter, r *http.Request) er
 		data.NextPageURL = urlutil.SetParam(baseURL, "offset",
 			fmt.Sprintf("%d", data.Filter.Offset+len(data.List)))
 	}
-	return h.templates["index.html"].ExecuteTemplate(w, "base.html", data)
+	return h.renderTemplate(w, "index.html", data)
 }
 
 func (h *dashboardHandler) getOffset(r *http.Request) (int, error) {
@@ -202,7 +208,7 @@ func (h *dashboardHandler) seriesInfo(w http.ResponseWriter, r *http.Request) er
 		}
 		data.Sessions = append(data.Sessions, sessionData)
 	}
-	return h.templates["series.html"].ExecuteTemplate(w, "base.html", data)
+	return h.renderTemplate(w, "series.html", data)
 }
 
 func groupFindings(findings []*db.Finding) map[string][]*db.Finding {
@@ -211,6 +217,17 @@ func groupFindings(findings []*db.Finding) map[string][]*db.Finding {
 		ret[finding.TestName] = append(ret[finding.TestName], finding)
 	}
 	return ret
+}
+
+func (h *dashboardHandler) renderTemplate(w http.ResponseWriter, name string, data any) error {
+	type page struct {
+		Title string
+		Data  any
+	}
+	return h.templates[name].ExecuteTemplate(w, "base.html", page{
+		Title: h.title,
+		Data:  data,
+	})
 }
 
 // nolint:dupl
@@ -258,6 +275,20 @@ func (h *dashboardHandler) findingInfo(w http.ResponseWriter, r *http.Request) e
 		return h.streamBlob(w, finding.ReportURI)
 	case "log":
 		return h.streamBlob(w, finding.LogURI)
+	case "syz_repro":
+		opts, err := blob.ReadAllBytes(h.blobStorage, finding.SyzReproOptsURI)
+		if err != nil {
+			return err
+		}
+		repro, err := blob.ReadAllBytes(h.blobStorage, finding.SyzReproURI)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "# %s\n", opts)
+		_, err = w.Write(repro)
+		return err
+	case "c_repro":
+		return h.streamBlob(w, finding.CReproURI)
 	default:
 		return fmt.Errorf("%w: unknown key value", errBadRequest)
 	}
