@@ -62,9 +62,16 @@ func (s *baseSyzllm) prepareForRequest() {
 }
 
 func (s *baseSyzllm) request() {
+	serverHostInDocker := os.Getenv("SERVER_HOST")
+	serverPortInDocker := os.Getenv("SERVER_PORT")
+
 	serverInfo, err := syzllm_pkg2.GetServerInfo("test")
 	if err != nil {
 		panic(err)
+	}
+	if serverHostInDocker != "" && serverPortInDocker != "" {
+		serverInfo.Host = serverHostInDocker
+		serverInfo.Port = serverPortInDocker
 	}
 	url := fmt.Sprintf("http://%s:%s", serverInfo.Host, serverInfo.Port)
 

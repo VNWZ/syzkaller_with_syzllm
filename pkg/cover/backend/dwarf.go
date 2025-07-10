@@ -82,6 +82,18 @@ var arches = map[string]*Arch{
 			return pc + 4*off
 		},
 	},
+	targets.S390x: {
+		scanSize:      1,
+		callLen:       6,
+		callRelocType: uint64(elf.R_390_PLT32DBL),
+		isCallInsn: func(arch *Arch, insn []byte) bool {
+			return insn[0] == 0xc0 && insn[1] == 0xe5
+		},
+		callTarget: func(arch *Arch, insn []byte, pc uint64) uint64 {
+			off := uint64(int64(int32(binary.BigEndian.Uint32(insn[2:]))))
+			return pc + 2*off
+		},
+	},
 }
 
 func makeDWARF(params *dwarfParams) (impl *Impl, err error) {
@@ -114,7 +126,7 @@ func processModule(params *dwarfParams, module *vminfo.KernelModule, info *symbo
 
 	var data []byte
 	var coverPoints [2][]uint64
-	if target.Arch != targets.AMD64 && target.Arch != targets.ARM64 {
+	if _, ok := arches[target.Arch]; !ok {
 		coverPoints, err = objdump(target, module)
 	} else if module.Name == "" {
 		data, err = params.readTextData(module)
@@ -407,8 +419,11 @@ func readTextRanges(debugInfo *dwarf.Data, module *vminfo.KernelModule, pcFix pc
 		} else {
 			// Compile unit names are relative to the compilation dir,
 			// while per-line info isn't.
-			// Let's stick to the common approach.
-			unitName := filepath.Join(attrCompDir, attrName)
+			// attrName could be an absolute path for out-of-tree modules.
+			unitName := attrName
+			if !filepath.IsAbs(attrName) {
+				unitName = filepath.Join(attrCompDir, attrName)
+			}
 			ranges1, err := debugInfo.Ranges(ent)
 			if err != nil {
 				return nil, nil, err
@@ -716,7 +731,10 @@ func objdump(target *targets.Target, mod *vminfo.KernelModule) ([2][]uint64, err
 	callInsns, traceFuncs := archCallInsn(target)
 	for s.Scan() {
 		if pc := parseLine(callInsns, traceFuncs, s.Bytes()); pc != 0 {
-			pcs[0] = append(pcs[0], pc+mod.Addr)
+			if mod.Name != "" {
+				pc = pc + mod.Addr
+			}
+			pcs[0] = append(pcs[0], pc)
 		}
 	}
 	stderrOut, _ := io.ReadAll(stderr)

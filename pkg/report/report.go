@@ -17,6 +17,7 @@ import (
 	"github.com/google/syzkaller/pkg/vcs"
 	"github.com/google/syzkaller/pkg/vminfo"
 	"github.com/google/syzkaller/sys/targets"
+	"github.com/ianlancetaylor/demangle"
 )
 
 type reporterImpl interface {
@@ -82,12 +83,9 @@ type ExecutorInfo struct {
 	ExecID int // The program the syz-executor was executing.
 }
 
-func (r Report) String() string {
-	return fmt.Sprintf("crash: %v\n%s", r.Title, r.Report)
+func (rep *Report) String() string {
+	return fmt.Sprintf("crash: %v\n%s", rep.Title, rep.Report)
 }
-
-// unspecifiedType can be used to cancel oops.reportType from oopsFormat.reportType.
-const unspecifiedType = crash.Type("UNSPECIFIED")
 
 // NewReporter creates reporter for the specified OS/Type.
 func NewReporter(cfg *mgrconfig.Config) (*Reporter, error) {
@@ -237,16 +235,6 @@ func (reporter *Reporter) Symbolize(rep *Report) error {
 		rep.Suppressed = true
 	}
 	return nil
-}
-
-func setReportType(rep *Report, oops *oops, format oopsFormat) {
-	if format.reportType == unspecifiedType {
-		rep.Type = crash.UnknownType
-	} else if format.reportType != crash.UnknownType {
-		rep.Type = format.reportType
-	} else if oops.reportType != crash.UnknownType {
-		rep.Type = oops.reportType
-	}
 }
 
 func (reporter *Reporter) isInteresting(rep *Report) bool {
@@ -405,8 +393,6 @@ type oops struct {
 	header       []byte
 	formats      []oopsFormat
 	suppressions []*regexp.Regexp
-	// This reportType will be used if oopsFormat's reportType is empty.
-	reportType crash.Type
 }
 
 type oopsFormat struct {
@@ -427,8 +413,6 @@ type oopsFormat struct {
 	// present, but this format does not comply with that.
 	noStackTrace bool
 	corrupted    bool
-	// If not empty, report will have this type.
-	reportType crash.Type
 }
 
 type stackFmt struct {
@@ -720,8 +704,12 @@ func appendStackFrame(frames []string, match [][]byte, skipRe *regexp.Regexp) []
 		return frames
 	}
 	for _, frame := range match[1:] {
-		if frame != nil && (skipRe == nil || !skipRe.Match(frame)) {
-			frames = append(frames, string(frame))
+		if frame == nil {
+			continue
+		}
+		frame := demangle.Filter(string(frame), demangle.NoParams)
+		if skipRe == nil || !skipRe.MatchString(frame) {
+			frames = append(frames, frame)
 		}
 	}
 	return frames
@@ -806,14 +794,13 @@ func simpleLineParser(output []byte, oopses []*oops, params *stackParams, ignore
 	if oops == nil {
 		return nil
 	}
-	title, corrupted, altTitles, format := extractDescription(output[rep.StartPos:], oops, params)
+	title, corrupted, altTitles, _ := extractDescription(output[rep.StartPos:], oops, params)
 	rep.Title = title
 	rep.AltTitles = altTitles
 	rep.Report = output[rep.StartPos:]
 	rep.Corrupted = corrupted != ""
 	rep.CorruptedReason = corrupted
-	setReportType(rep, oops, format)
-
+	rep.Type = TitleToCrashType(rep.Title)
 	return rep
 }
 
@@ -872,7 +859,7 @@ func Truncate(log []byte, begin, end int) []byte {
 
 var (
 	filenameRe    = regexp.MustCompile(`([a-zA-Z0-9_\-\./]*[a-zA-Z0-9_\-]+\.(c|h)):[0-9]+`)
-	reportFrameRe = regexp.MustCompile(`.* in ([a-zA-Z0-9_]+)`)
+	reportFrameRe = regexp.MustCompile(`.* in ((?:<[a-zA-Z0-9_: ]+>)?[a-zA-Z0-9_:]+)`)
 	// Matches a slash followed by at least one directory nesting before .c/.h file.
 	deeperPathRe = regexp.MustCompile(`^/[a-zA-Z0-9_\-\./]+/[a-zA-Z0-9_\-]+\.(c|h)$`)
 )
@@ -891,7 +878,6 @@ var commonOopses = []*oops{
 			},
 		},
 		[]*regexp.Regexp{},
-		crash.SyzFailure,
 	},
 	{
 		// Errors produced by log.Fatal functions.
@@ -905,7 +891,6 @@ var commonOopses = []*oops{
 			},
 		},
 		[]*regexp.Regexp{},
-		crash.SyzFailure,
 	},
 	{
 		[]byte("panic:"),
@@ -930,7 +915,6 @@ var commonOopses = []*oops{
 			compile(`ddb\.onpanic:`),
 			compile(`evtlog_status:`),
 		},
-		crash.UnknownType,
 	},
 }
 
@@ -947,5 +931,15 @@ var groupGoRuntimeErrors = oops{
 		compile("ALSA"),
 		compile("fatal error: cannot create timer"),
 	},
-	crash.UnknownType,
+}
+
+func TitleToCrashType(title string) crash.Type {
+	for _, t := range titleToType {
+		for _, prefix := range t.includePrefixes {
+			if strings.HasPrefix(title, prefix) {
+				return t.crashType
+			}
+		}
+	}
+	return crash.UnknownType
 }

@@ -4,7 +4,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: email-reporter-deployment
+  name: email-reporter
 spec:
   replicas: 1
   selector:
@@ -15,7 +15,7 @@ spec:
       labels:
         app: email-reporter
     spec:
-      serviceAccountName: gke-service-ksa
+      serviceAccountName: gke-email-reporter-ksa
       containers:
       - name: email-reporter
         image: ${IMAGE_PREFIX}email-reporter:${IMAGE_TAG}

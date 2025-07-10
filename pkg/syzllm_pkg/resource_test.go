@@ -1209,6 +1209,30 @@ func TestInsertSyzllmCalls(t *testing.T) {
 				"epoll_ctl$SyzLLM(r3, 0x2, r5, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
 			},
 		},
+		{
+			name: "resource dont have res num",
+			calls: []string{
+				"socket$unix(0x1, &(0x7f0000008000)=nil, 0x0)",
+				"openat$unix(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r0 = syscall$des(0x0)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"[MASK]", // [MASK]
+			},
+			insertPos: 4,
+			syzllmCalls: []string{
+				"r0 = openat$des(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0,",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"epoll_ctl$SyzLLM(r0, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})",
+			},
+			expected: []string{
+				"socket$unix(0x1, &(0x7f0000008000)=nil, 0x0)",
+				"openat$unix(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0, 0x0)",
+				"r0 = syscall$des(0x0)",
+				"pipe2(&(0x7f0000000240)={<r1=>0xffffffffffffffff, <r2=>0xffffffffffffffff}, 0x80800)",
+				"r3 = openat$des(0xffffffffffffff9c, &(0x7f0000008000)=nil, 0x0,",
+				"epoll_ctl$SyzLLM(r3, 0x2, r1, &(0x7f000003a000)={0x1, 0x6})", // [MASK]
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -12,6 +12,7 @@ import (
 	"github.com/google/syzkaller/syz-cluster/pkg/app"
 	"github.com/google/syzkaller/syz-cluster/pkg/blob"
 	"github.com/google/syzkaller/syz-cluster/pkg/db"
+	"github.com/google/uuid"
 )
 
 type FindingService struct {
@@ -27,28 +28,38 @@ func NewFindingService(env *app.AppEnvironment) *FindingService {
 }
 
 func (s *FindingService) Save(ctx context.Context, req *api.NewFinding) error {
-	var reportURI, logURI string
-	var err error
-	if len(req.Log) > 0 {
-		logURI, err = s.blobStorage.Store(bytes.NewReader(req.Log))
-		if err != nil {
-			return fmt.Errorf("failed to save the log: %w", err)
-		}
-	}
-	if len(req.Report) > 0 {
-		reportURI, err = s.blobStorage.Store(bytes.NewReader(req.Report))
-		if err != nil {
-			return fmt.Errorf("failed to save the report: %w", err)
-		}
-	}
-	// TODO: if it's not actually addded, the blob records will be orphaned.
-	err = s.findingRepo.Save(ctx, &db.Finding{
+	finding := &db.Finding{
+		ID:        uuid.NewString(),
 		SessionID: req.SessionID,
 		TestName:  req.TestName,
 		Title:     req.Title,
-		ReportURI: reportURI,
-		LogURI:    logURI,
-	})
+	}
+	var err error
+
+	type saveAsset struct {
+		saveTo *string
+		value  []byte
+		name   string
+	}
+
+	for _, asset := range []saveAsset{
+		{&finding.LogURI, req.Log, "log"},
+		{&finding.ReportURI, req.Report, "report"},
+		{&finding.SyzReproURI, req.SyzRepro, "syz_repro"},
+		{&finding.SyzReproOptsURI, req.SyzReproOpts, "syz_repro_opts"},
+		{&finding.CReproURI, req.CRepro, "c_repro"},
+	} {
+		if len(asset.value) == 0 {
+			continue
+		}
+		*asset.saveTo, err = s.blobStorage.Write(bytes.NewReader(asset.value), "Finding", finding.ID, asset.name)
+		if err != nil {
+			return fmt.Errorf("failed to save %s: %w", asset.name, err)
+		}
+	}
+
+	// TODO: if it's not actually addded, the blobs above will be orphaned.
+	err = s.findingRepo.Save(ctx, finding)
 	if err == db.ErrFindingExists {
 		// It's ok, just ignore.
 		return nil

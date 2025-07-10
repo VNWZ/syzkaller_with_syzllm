@@ -14,4 +14,9 @@ data:
     emailReporting:
       name: test-name
       docs: http://docs/
+      sender: smtp
       supportEmail: name@email.com
+      archiveList: archive@list.com
+      moderationList: moderation@list.com
+      smtpConfig:
+        from: sender@email.com
