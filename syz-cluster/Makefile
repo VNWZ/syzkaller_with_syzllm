@@ -31,7 +31,7 @@ $(eval $(call build_image_rules,./workflow/boot-step,boot-step))
 $(eval $(call build_image_rules,./tools/db-mgmt,db-mgmt))
 $(eval $(call build_image_rules,./tools/send-test-email,send-test-email))
 
-IMAGES := controller web-dashboard reporter-server series-tracker db-mgmt triage-step build-step boot-step fuzz-step send-test-email
+IMAGES := controller web-dashboard reporter-server series-tracker db-mgmt triage-step build-step boot-step fuzz-step send-test-email email-reporter
 BUILD_TARGETS := $(addprefix build-, $(IMAGES))
 PUSH_TARGETS := $(addprefix push-, $(IMAGES))
 
@@ -95,8 +95,11 @@ SED_EXPRESSIONS := \
 k8s-config-dev:
 	@kubectl kustomize ./overlays/minikube/ | sed $(SED_EXPRESSIONS)
 
-k8s-config-gke: ensure-spanner-database-uri-env ensure-blob-storage-env ensure-workflow-artifacts-bucket
-	@kubectl kustomize ./overlays/gke/ | sed $(SED_EXPRESSIONS)
+k8s-config-gke-prod: ensure-spanner-database-uri-env ensure-blob-storage-env ensure-workflow-artifacts-bucket
+	@kubectl kustomize ./overlays/gke/prod/ | sed $(SED_EXPRESSIONS)
+
+k8s-config-gke-staging: ensure-spanner-database-uri-env ensure-blob-storage-env ensure-workflow-artifacts-bucket
+	@kubectl kustomize ./overlays/gke/staging/ | sed $(SED_EXPRESSIONS)
 
 migrate-job.yaml:
 	@cat tools/db-mgmt/migrate-job.yaml | sed $(SED_EXPRESSIONS)
