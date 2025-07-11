@@ -30,7 +30,7 @@ func ProcessDescriptor(line string) string {
 		}
 	}
 
-	callsWithDescriptor := map[string]string{"socketpair": "unix", "socket": "unix", "connect": "unix", "getsockname": "unix", "openat": "damon_target_ids", "fcntl": "setflags", "accept4": "unix", "read": "FUSE", "quotactl": "Q_QUOTAON", "getpeername": "llc", "sendmmsg": "unix", "getsockopt": "kcm_KCM_RECV_DISABLE", "bind": "unix", "sendto": "llc", "setsockopt": "kcm_KCM_RECV_DISABLE", "write": "damon_target_ids", "ioctl": "FITRIM", "mmap": "IORING_OFF_SQ_RING", "recvmsg": "unix", "sendmsg": "unix", "epoll_ctl": "EPOLL_CTL_ADD", "accept": "unix", "prctl": "PR_SET_PDEATHSIG", "recvfrom": "unix"}
+	callsWithDescriptor := map[string]string{"socketpair": "unix", "socket": "unix", "connect": "unix", "getsockname": "unix", "openat": "damon_target_ids", "fcntl": "setflags", "accept4": "unix", "read": "FUSE", "quotactl": "Q_QUOTAON", "getpeername": "llc", "sendmmsg": "unix", "getsockopt": "kcm_KCM_RECV_DISABLE", "bind": "unix", "sendto": "llc", "setsockopt": "kcm_KCM_RECV_DISABLE", "write": "damon_target_ids", "ioctl": "FITRIM", "mmap": "IORING_OFF_SQ_RING", "recvmsg": "unix", "sendmsg": "unix", "epoll_ctl": "EPOLL_CTL_ADD", "accept": "unix", "prctl": "PR_SET_PDEATHSIG", "recvfrom": "unix", "syz_open_dev": "ttys"}
 
 	callName := ExtractCallNameWithoutDescriptor(line)
 	descriptor, exists := callsWithDescriptor[callName]
