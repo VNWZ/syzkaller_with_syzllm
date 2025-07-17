@@ -7,7 +7,8 @@ metadata:
   name: global-config
 data:
   config.yaml: |
-    parallelWorkflows: 5
+    URL: https://ci.syzbot.org
+    parallelWorkflows: 7
     loreArchives:
       - netdev
       - linux-ext4

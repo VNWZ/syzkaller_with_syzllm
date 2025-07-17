@@ -31,7 +31,9 @@ func TestModerationReportFlow(t *testing.T) {
 	receivedEmail.Body = nil // for now don't validate the body
 	assert.Equal(t, &emailclient.Email{
 		To:      []string{testEmailConfig.ModerationList},
+		Cc:      []string{testEmailConfig.ArchiveList},
 		Subject: "[moderation/CI] Re: " + testSeries.Title,
+		BugID:   report.ID,
 		// Note that InReplyTo and Cc are nil.
 	}, receivedEmail)
 
@@ -47,7 +49,7 @@ func TestModerationReportFlow(t *testing.T) {
 	assert.NoError(t, err)
 
 	// The report must be sent upstream.
-	_, err = handler.PollAndReport(ctx)
+	report, err = handler.PollAndReport(ctx)
 	assert.NoError(t, err)
 
 	receivedEmail = emailServer.email()
@@ -58,6 +60,7 @@ func TestModerationReportFlow(t *testing.T) {
 		Cc:        []string{testEmailConfig.ArchiveList},
 		Subject:   "[name] Re: " + testSeries.Title,
 		InReplyTo: testSeries.ExtID,
+		BugID:     report.ID,
 	}, receivedEmail)
 }
 
@@ -116,6 +119,40 @@ Unknown command
 
 `),
 		}, reply)
+	})
+
+	t.Run("own email", func(t *testing.T) {
+		err = handler.IncomingEmail(ctx, &email.Email{
+			OwnEmail: true,
+			BugIDs:   []string{report.ID},
+			Commands: []*email.SingleCommand{
+				{
+					Command: email.CmdUpstream,
+				},
+			},
+		})
+		assert.NoError(t, err)
+		_, err = handler.PollAndReport(ctx)
+		assert.NoError(t, err)
+		// No email must be sent in reply.
+		assert.Nil(t, emailServer.email())
+	})
+
+	t.Run("forwarded email", func(t *testing.T) {
+		err = handler.IncomingEmail(ctx, &email.Email{
+			Subject:  email.ForwardedPrefix + "abcd",
+			OwnEmail: true,
+			BugIDs:   []string{report.ID},
+			Commands: []*email.SingleCommand{
+				{
+					Command: email.CmdUpstream,
+				},
+			},
+		})
+		assert.NoError(t, err)
+		_, err = handler.PollAndReport(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, emailServer.email())
 	})
 }
 
