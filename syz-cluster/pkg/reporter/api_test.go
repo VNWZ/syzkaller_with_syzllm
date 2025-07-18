@@ -54,6 +54,7 @@ func TestAPIReportFlow(t *testing.T) {
 			ExtID: testSeries.ExtID,
 			Title: testSeries.Title,
 			Link:  "http://link/to/series",
+			Cc:    []string{"first@user.com", "second@user.com"},
 			Patches: []api.SeriesPatch{
 				{
 					Seq:   1,
@@ -68,7 +69,8 @@ func TestAPIReportFlow(t *testing.T) {
 				Title:  "finding 0",
 				Report: "report 0",
 				Build: api.BuildInfo{
-					Repo:       "mainline",
+					TreeName:   "mainline",
+					TreeURL:    "https://git/repo",
 					BaseCommit: "abcd",
 					Arch:       "amd64",
 					Compiler:   "compiler",
@@ -78,7 +80,8 @@ func TestAPIReportFlow(t *testing.T) {
 				Title:  "finding 1",
 				Report: "report 1",
 				Build: api.BuildInfo{
-					Repo:       "mainline",
+					TreeName:   "mainline",
+					TreeURL:    "https://git/repo",
 					BaseCommit: "abcd",
 					Arch:       "amd64",
 					Compiler:   "compiler",
