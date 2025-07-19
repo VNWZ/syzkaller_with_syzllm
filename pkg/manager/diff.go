@@ -47,6 +47,17 @@ type DiffFuzzerConfig struct {
 	// The option may help find a balance between spending too much time triaging
 	// the corpus and not reaching a proper kernel coverage.
 	MaxTriageTime time.Duration
+	// If non-empty, the fuzzer will spend no more than this amount of time
+	// trying to reach the modified code. The time is counted since the moment
+	// 99% of the corpus is triaged.
+	FuzzToReachPatched time.Duration
+}
+
+func (cfg *DiffFuzzerConfig) TriageDeadline() <-chan time.Time {
+	if cfg.MaxTriageTime == 0 {
+		return nil
+	}
+	return time.After(cfg.MaxTriageTime)
 }
 
 type UniqueBug struct {
@@ -59,11 +70,11 @@ func RunDiffFuzzer(ctx context.Context, baseCfg, newCfg *mgrconfig.Config, cfg D
 	if cfg.PatchedOnly == nil {
 		return fmt.Errorf("you must set up a patched only channel")
 	}
-	base, err := setup(ctx, "base", baseCfg, cfg.Debug)
+	base, err := setup("base", baseCfg, cfg.Debug)
 	if err != nil {
 		return err
 	}
-	new, err := setup(ctx, "new", newCfg, cfg.Debug)
+	new, err := setup("new", newCfg, cfg.Debug)
 	if err != nil {
 		return err
 	}
@@ -125,6 +136,13 @@ type diffContext struct {
 	reproAttempts map[string]int
 }
 
+const (
+	// Don't start reproductions until 90% of the corpus has been triaged.
+	corpusTriageToRepro = 0.9
+	// Start to monitor whether we reached the modified files only after triaging 99%.
+	corpusTriageToMonitor = 0.99
+)
+
 func (dc *diffContext) Loop(baseCtx context.Context) error {
 	g, ctx := errgroup.WithContext(baseCtx)
 	reproLoop := NewReproLoop(dc, dc.new.pool.Total()-dc.new.cfg.FuzzingVMs, false)
@@ -134,21 +152,23 @@ func (dc *diffContext) Loop(baseCtx context.Context) error {
 			return dc.http.Serve(ctx)
 		})
 	}
+
 	g.Go(func() error {
-		defer log.Logf(1, "syz-diff: repro loop terminated")
-		// Let both base and patched instances somewhat progress in fuzzing before we take
-		// VMs away for bug reproduction.
-		dc.waitCorpusTriage(ctx)
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return nil
+		case <-dc.waitCorpusTriage(ctx, corpusTriageToRepro):
+		case <-dc.cfg.TriageDeadline():
+			log.Logf(0, "timed out waiting for coprus triage")
 		}
 		log.Logf(0, "starting bug reproductions")
 		reproLoop.Loop(ctx)
 		return nil
 	})
 
-	g.Go(dc.base.Loop)
-	g.Go(dc.new.Loop)
+	g.Go(func() error { return dc.monitorPatchedCoverage(ctx) })
+	g.Go(func() error { return dc.base.Loop(ctx) })
+	g.Go(func() error { return dc.new.Loop(ctx) })
 
 	runner := &reproRunner{done: make(chan reproRunnerResult, 2), kernel: dc.base}
 	statTimer := time.NewTicker(5 * time.Minute)
@@ -224,33 +244,68 @@ loop:
 	return g.Wait()
 }
 
-func (dc *diffContext) waitCorpusTriage(ctx context.Context) {
-	// Wait either until we have triaged 90% of the candidates or
-	// once MaxTriageTime has passed.
-	// We don't want to wait for 100% of the candidates because there's usually a long
-	// tail of slow triage jobs + the value of the candidates diminishes over time.
-	const triagedThreshold = 0.9
+func (dc *diffContext) waitCorpusTriage(ctx context.Context, threshold float64) chan struct{} {
 	const backOffTime = 30 * time.Second
+	ret := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-time.After(backOffTime):
+			case <-ctx.Done():
+				return
+			}
+			triaged := dc.new.triageProgress()
+			if triaged >= threshold {
+				log.Logf(0, "triaged %.1f%% of the corpus", triaged*100.0)
+				close(ret)
+				return
+			}
+		}
+	}()
+	return ret
+}
 
-	startedAt := time.Now()
-	for {
-		select {
-		case <-time.After(backOffTime):
-		case <-ctx.Done():
-			return
-		}
-		triaged := dc.new.triageProgress()
-		if triaged >= triagedThreshold {
-			log.Logf(0, "triaged %.1f%% of the corpus", triaged*100.0)
-			return
-		}
-		if dc.cfg.MaxTriageTime != 0 &&
-			time.Since(startedAt) >= dc.cfg.MaxTriageTime {
-			log.Logf(0, "timed out waiting for %.1f%% triage (have %.1f%%)",
-				triagedThreshold*100.0, triaged*100.0)
-			return
-		}
+var ErrPatchedAreaNotReached = errors.New("fuzzer has not reached the patched area")
+
+func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
+	if dc.cfg.FuzzToReachPatched == 0 {
+		// The feature is disabled.
+		return nil
 	}
+	focusPCs := 0
+	// The last one is "everything else", so it's not of interest.
+	coverFilters := dc.new.coverFilters
+	for i := 0; i < len(coverFilters.Areas)-1; i++ {
+		focusPCs += len(coverFilters.Areas[i].CoverPCs)
+	}
+	if focusPCs == 0 {
+		// No areas were configured.
+		log.Logf(1, "no PCs in the areas of focused fuzzing, skipping the zero patched coverage check")
+		return nil
+	}
+
+	// First wait until we have almost triaged all of the corpus.
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-dc.waitCorpusTriage(ctx, corpusTriageToMonitor):
+	}
+
+	// Then give the fuzzer some change to get through.
+	select {
+	case <-time.After(dc.cfg.FuzzToReachPatched):
+	case <-ctx.Done():
+		return nil
+	}
+	focusAreaStats := dc.new.progsPerArea()
+	if focusAreaStats[modifiedArea]+focusAreaStats[includesArea] > 0 {
+		log.Logf(0, "fuzzer has reached the modified code (%d + %d), continuing fuzzing",
+			focusAreaStats[modifiedArea], focusAreaStats[includesArea])
+		return nil
+	}
+	log.Logf(0, "fuzzer has not reached the modified code in %s, aborting",
+		dc.cfg.FuzzToReachPatched)
+	return ErrPatchedAreaNotReached
 }
 
 // TODO: instead of this limit, consider expotentially growing delays between reproduction attempts.
@@ -334,13 +389,12 @@ type kernelContext struct {
 	duplicateInto queue.Executor
 }
 
-func setup(ctx context.Context, name string, cfg *mgrconfig.Config, debug bool) (*kernelContext, error) {
+func setup(name string, cfg *mgrconfig.Config, debug bool) (*kernelContext, error) {
 	osutil.MkdirAll(cfg.Workdir)
 
 	kernelCtx := &kernelContext{
 		name:            name,
 		debug:           debug,
-		ctx:             ctx,
 		cfg:             cfg,
 		crashes:         make(chan *report.Report, 128),
 		candidates:      make(chan []fuzzer.Candidate),
@@ -373,13 +427,14 @@ func setup(ctx context.Context, name string, cfg *mgrconfig.Config, debug bool) 
 	return kernelCtx, nil
 }
 
-func (kc *kernelContext) Loop() error {
+func (kc *kernelContext) Loop(baseCtx context.Context) error {
 	defer log.Logf(1, "syz-diff (%s): kernel context loop terminated", kc.name)
 
 	if err := kc.serv.Listen(); err != nil {
 		return fmt.Errorf("failed to start rpc server: %w", err)
 	}
-	eg, ctx := errgroup.WithContext(kc.ctx)
+	eg, ctx := errgroup.WithContext(baseCtx)
+	kc.ctx = ctx
 	eg.Go(func() error {
 		return kc.serv.Serve(ctx)
 	})
@@ -563,6 +618,14 @@ func (kc *kernelContext) triageProgress() float64 {
 	return 1.0 - float64(fuzzer.CandidatesToTriage())/float64(total)
 }
 
+func (kc *kernelContext) progsPerArea() map[string]int {
+	fuzzer := kc.fuzzer.Load()
+	if fuzzer == nil {
+		return nil
+	}
+	return fuzzer.Config.Corpus.ProgsPerArea()
+}
+
 // reproRunner is used to run reproducers on the base kernel to determine whether it is affected.
 type reproRunner struct {
 	done    chan reproRunnerResult
@@ -665,6 +728,11 @@ func (kc *kernelContext) symbolize(rep *report.Report) {
 	}
 }
 
+const (
+	modifiedArea = "modified"
+	includesArea = "included"
+)
+
 func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte) {
 	direct, transitive := affectedFiles(cfg, gitPatches)
 	if len(direct) > 0 {
@@ -672,7 +740,7 @@ func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte) {
 		log.Logf(0, "adding directly modified files to focus_order: %q", direct)
 		cfg.Experimental.FocusAreas = append(cfg.Experimental.FocusAreas,
 			mgrconfig.FocusArea{
-				Name: "modified",
+				Name: modifiedArea,
 				Filter: mgrconfig.CovFilterCfg{
 					Files: direct,
 				},
@@ -685,7 +753,7 @@ func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte) {
 		log.Logf(0, "adding transitively affected to focus_order: %q", transitive)
 		cfg.Experimental.FocusAreas = append(cfg.Experimental.FocusAreas,
 			mgrconfig.FocusArea{
-				Name: "included",
+				Name: includesArea,
 				Filter: mgrconfig.CovFilterCfg{
 					Files: transitive,
 				},
