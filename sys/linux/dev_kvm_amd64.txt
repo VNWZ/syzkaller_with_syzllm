@@ -12,6 +12,8 @@ include <asm/mce.h>
 # kvm_syz_vm is a VM handler used by syzos-related pseudo-syscalls. It is actually an opaque pointer under the hood.
 resource kvm_syz_vm$x86[int64]
 resource fd_sgx_provision[fd]
+resource fd_sev[fd]
+resource sev_handle[int32]
 
 # Map the given memory into the VM and set up syzos there.
 syz_kvm_setup_syzos_vm$x86(fd fd_kvmvm, usermem vma[1024]) kvm_syz_vm$x86
@@ -164,13 +166,211 @@ define KVM_SETUP_VM	(1<<6)
 openat$sgx_provision(fd const[AT_FDCWD], file ptr[in, string["/dev/sgx_provision"]], flags flags[open_flags], mode const[0]) fd_sgx_provision
 ioctl$KVM_CAP_SGX_ATTRIBUTE(fd fd_kvmvm, cmd const[KVM_ENABLE_CAP], arg ptr[in, kvm_enable_cap[KVM_CAP_SGX_ATTRIBUTE, fd_sgx_provision]])
 
+# SEV-related (based on https://www.kernel.org/doc/html/latest/virt/kvm/x86/amd-memory-encryption.html)
+openat$sev(fd const[AT_FDCWD], file ptr[in, string["/dev/sev"]], flags flags[open_flags], mode const[0]) fd_sev
+
+ioctl$KVM_SEV_INIT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_INIT, const[0, intptr]]])
+ioctl$KVM_SEV_ES_INIT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_ES_INIT, const[0, intptr]]])
+ioctl$KVM_SEV_INIT2(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_INIT2, ptr[in, kvm_sev_init]]])
+
+ioctl$KVM_SEV_LAUNCH_START(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_START, ptr[inout, kvm_sev_launch_start]]])
+ioctl$KVM_SEV_LAUNCH_UPDATE_DATA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_UPDATE_DATA, ptr[in, kvm_sev_launch_update_data]]])
+ioctl$KVM_SEV_LAUNCH_UPDATE_VMSA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_UPDATE_VMSA, const[0, intptr]]])
+ioctl$KVM_SEV_LAUNCH_SECRET(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_SECRET, ptr[in, kvm_sev_launch_secret]]])
+ioctl$KVM_SEV_LAUNCH_MEASURE(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_MEASURE, ptr[in, kvm_sev_launch_measure]]])
+ioctl$KVM_SEV_LAUNCH_FINISH(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_LAUNCH_FINISH, const[0, intptr]]])
+
+ioctl$KVM_SEV_SEND_START(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SEND_START, ptr[in, kvm_sev_send_start]]])
+ioctl$KVM_SEV_SEND_UPDATE_DATA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SEND_UPDATE_DATA, ptr[in, kvm_sev_send_update_data]]])
+ioctl$KVM_SEV_SEND_UPDATE_VMSA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SEND_UPDATE_VMSA, const[0, intptr]]])
+ioctl$KVM_SEV_SEND_CANCEL(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SEND_CANCEL, const[0, intptr]]])
+ioctl$KVM_SEV_SEND_FINISH(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SEND_FINISH, const[0, intptr]]])
+
+ioctl$KVM_SEV_RECEIVE_START(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_RECEIVE_START, ptr[inout, kvm_sev_receive_start]]])
+ioctl$KVM_SEV_RECEIVE_UPDATE_DATA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_RECEIVE_UPDATE_DATA, ptr[in, kvm_sev_receive_update_data]]])
+ioctl$KVM_SEV_RECEIVE_UPDATE_VMSA(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_RECEIVE_UPDATE_VMSA, const[0, intptr]]])
+ioctl$KVM_SEV_RECEIVE_FINISH(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_RECEIVE_FINISH, const[0, intptr]]])
+
+ioctl$KVM_SEV_GUEST_STATUS(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_GUEST_STATUS, ptr[out, kvm_sev_guest_status]]])
+ioctl$KVM_SEV_DBG_DECRYPT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_DBG_DECRYPT, ptr[in, kvm_sev_dbg]]])
+ioctl$KVM_SEV_DBG_ENCRYPT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_DBG_ENCRYPT, ptr[in, kvm_sev_dbg]]])
+ioctl$KVM_SEV_CERT_EXPORT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_CERT_EXPORT, const[0, intptr]]])
+ioctl$KVM_SEV_GET_ATTESTATION_REPORT(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_GET_ATTESTATION_REPORT, ptr[in, kvm_sev_attestation_report]]])
+
+ioctl$KVM_SEV_SNP_LAUNCH_START(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SNP_LAUNCH_START, ptr[in, kvm_sev_snp_launch_start]]])
+ioctl$KVM_SEV_SNP_LAUNCH_UPDATE(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SNP_LAUNCH_UPDATE, ptr[in, kvm_sev_snp_launch_update]]])
+ioctl$KVM_SEV_SNP_LAUNCH_FINISH(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_OP], arg ptr[inout, kvm_memory_encrypt_op[KVM_SEV_SNP_LAUNCH_FINISH, ptr[in, kvm_sev_snp_launch_finish]]])
+
+# Apparently KVM_MEMORY_ENCRYPT_REG_REGION and KVM_MEMORY_ENCRYPT_UNREG_REGION are VM ioctls, despite
+# https://docs.kernel.org/virt/kvm/api.html#kvm-memory-encrypt-reg-region says they are system.
+ioctl$KVM_MEMORY_ENCRYPT_REG_REGION(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_REG_REGION], arg ptr[in, kvm_enc_region])
+ioctl$KVM_MEMORY_ENCRYPT_UNREG_REGION(fd fd_kvmvm, cmd const[KVM_MEMORY_ENCRYPT_UNREG_REGION], arg ptr[in, kvm_enc_region])
+
+type kvm_memory_encrypt_op[ID, DATA] {
+	id	const[ID, int32]
+	data	DATA
+	error	int32	(out)
+	sev_fd	fd_sev	(in)
+}
+
+kvm_sev_init {
+	vmsa_features	int64
+	flags		int32
+	ghcb_version	int16
+	pad1		const[0, int16]
+	pad2		array[const[0, int32], 8]
+}
+
+kvm_sev_launch_start {
+	handle		sev_handle	(inout)
+	policy		int32
+	dh_addr		vma64[1:4]
+	dh_len		len[dh_addr, int32]
+	pad0		const[0, int32]
+	session_uaddr	vma64[1:4]
+	session_len	len[session_uaddr, int32]
+	pad1		const[0, int32]
+}
+
+kvm_sev_launch_update_data {
+	uaddr	vma64[1:4]
+	len	len[uaddr, int32]
+	pad0	const[0, int32]
+}
+
+kvm_sev_launch_secret {
+	hdr_uaddr	vma64[1:4]
+	hdr_len		len[hdr_uaddr, int32]
+	pad0		const[0, int32]
+	guest_uaddr	vma64[1:4]
+	guest_len	len[guest_uaddr, int32]
+	pad1		const[0, int32]
+	trans_uaddr	vma64[1:4]
+	trans_len	len[trans_uaddr, int32]
+	pad2		const[0, int32]
+}
+
+kvm_sev_launch_measure {
+	uaddr	vma64[1:4]
+	len	len[uaddr, int32]
+	pad0	const[0, int32]
+}
+
+kvm_sev_guest_status {
+	handle	sev_handle
+	policy	int32
+	state	int8
+}
+
+kvm_sev_dbg {
+	src_uaddr	vma64[1:4]
+	dst_uaddr	vma64[1:4]
+	len		len[src_uaddr, int32]
+}
+
+kvm_sev_attestation_report {
+	mnonce	array[int8, 16]
+	uaddr	vma64[1:4]
+	len	len[uaddr, int32]
+	pad0	const[0, int32]
+}
+
+kvm_sev_send_start {
+	policy			int32
+	pad0			const[0, int32]
+	pdh_cert_uaddr		vma64[1:4]
+	pdh_cert_len		len[pdh_cert_uaddr, int32]
+	pad1			const[0, int32]
+	plat_certs_uaddr	vma64[1:4]
+	plat_certs_len		len[plat_certs_uaddr, int32]
+	pad2			const[0, int32]
+	amd_certs_uaddr		vma64[1:4]
+	amd_certs_len		len[amd_certs_uaddr, int32]
+	pad3			const[0, int32]
+	session_uaddr		vma64[1:4]
+	session_len		len[session_uaddr, int32]
+	pad4			const[0, int32]
+}
+
+kvm_sev_send_update_data {
+	hdr_uaddr	vma64[1:4]
+	hdr_len		len[hdr_uaddr, int32]
+	pad0		const[0, int32]
+	guest_uaddr	vma64[1:4]
+	guest_len	len[guest_uaddr, int32]
+	pad1		const[0, int32]
+	trans_uaddr	vma64[1:4]
+	trans_len	len[trans_uaddr, int32]
+	pad2		const[0, int32]
+}
+
+kvm_sev_receive_start {
+	handle		sev_handle	(inout)
+	policy		int32
+	pdh_addr	vma64[1:4]
+	pdh_len		len[pdh_addr, int32]
+	pad0		const[0, int32]
+	session_uaddr	vma64[1:4]
+	session_len	len[session_uaddr, int32]
+	pad1		const[0, int32]
+}
+
+kvm_sev_receive_update_data {
+	hdr_uaddr	vma64[1:4]
+	hdr_len		len[hdr_uaddr, int32]
+	pad0		const[0, int32]
+	guest_uaddr	vma64[1:4]
+	guest_len	len[guest_uaddr, int32]
+	pad1		const[0, int32]
+	trans_uaddr	vma64[1:4]
+	trans_len	len[trans_uaddr, int32]
+	pad2		const[0, int32]
+}
+
+kvm_sev_snp_launch_start {
+	policy	int64
+	gosvw	array[int8, 16]
+	flags	int16
+	pad0	array[const[0, int8], 6]
+	pad1	array[const[0, int64], 4]
+}
+
+kvm_sev_snp_launch_update {
+	gfn_start	int64
+	uaddr		vma64[1:4]
+	len		len[uaddr, int64]
+	type		flags[snp_page_type, int8]
+	pad0		const[0, int8]
+	flags		int16
+	pad1		const[0, int32]
+	pad2		array[const[0, int64], 4]
+}
+
+snp_page_type = KVM_SEV_SNP_PAGE_TYPE_NORMAL, KVM_SEV_SNP_PAGE_TYPE_ZERO, KVM_SEV_SNP_PAGE_TYPE_UNMEASURED, KVM_SEV_SNP_PAGE_TYPE_SECRETS, KVM_SEV_SNP_PAGE_TYPE_CPUID
+
+kvm_sev_snp_launch_finish {
+	id_block_uaddr	vma64[1:4]
+	id_auth_uaddr	vma64[1:4]
+	id_block_en	int8
+	auth_key_en	int8
+	vcek_disabled	int8
+	host_data	array[int8, KVM_SEV_SNP_FINISH_DATA_SIZE]
+	pad0		array[const[0, int8], 3]
+	flags		int16
+	pad1		array[const[0, int64], 4]
+}
+
+kvm_enc_region {
+	addr	flags[kvm_guest_addrs, int64]
+	size	flags[kvm_guest_addr_size, int64]
+}
+
 #x86(-64) specific ioctls
-ioctl$KVM_GET_MSR_INDEX_LIST(fd fd_kvm, cmd const[KVM_GET_MSR_INDEX_LIST], arg ptr[in, kvm_msr_list])
-ioctl$KVM_GET_SUPPORTED_CPUID(fd fd_kvm, cmd const[KVM_GET_SUPPORTED_CPUID], arg buffer[out])
-ioctl$KVM_GET_EMULATED_CPUID(fd fd_kvmvm, cmd const[KVM_GET_EMULATED_CPUID], arg buffer[out])
-ioctl$KVM_X86_GET_MCE_CAP_SUPPORTED(fd fd_kvmvm, cmd const[KVM_X86_GET_MCE_CAP_SUPPORTED], arg buffer[out])
+ioctl$KVM_GET_MSR_INDEX_LIST(fd fd_kvm, cmd const[KVM_GET_MSR_INDEX_LIST], arg ptr[inout, kvm_msr_list])
+ioctl$KVM_GET_MSR_FEATURE_INDEX_LIST(fd fd_kvm, cmd const[KVM_GET_MSR_FEATURE_INDEX_LIST], arg ptr[inout, kvm_msr_list])
+ioctl$KVM_X86_GET_MCE_CAP_SUPPORTED(fd fd_kvm, cmd const[KVM_X86_GET_MCE_CAP_SUPPORTED], arg ptr[out, int64])
 ioctl$KVM_SET_IRQCHIP(fd fd_kvmvm, cmd const[KVM_SET_IRQCHIP], arg ptr[in, kvm_irqchip])
-ioctl$KVM_GET_IRQCHIP(fd fd_kvmvm, cmd const[KVM_GET_IRQCHIP], arg ptr[out, kvm_irqchip])
+ioctl$KVM_GET_IRQCHIP(fd fd_kvmvm, cmd const[KVM_GET_IRQCHIP], arg ptr[inout, kvm_irqchip])
 ioctl$KVM_XEN_HVM_CONFIG(fd fd_kvmvm, cmd const[KVM_XEN_HVM_CONFIG], arg ptr[in, kvm_xen_hvm_config])
 ioctl$KVM_GET_CLOCK(fd fd_kvmvm, cmd const[KVM_GET_CLOCK], arg ptr[out, kvm_clock_data])
 ioctl$KVM_SET_CLOCK(fd fd_kvmvm, cmd const[KVM_SET_CLOCK], arg ptr[in, kvm_clock_data])
@@ -186,6 +386,7 @@ ioctl$KVM_SET_NR_MMU_PAGES(fd fd_kvmvm, cmd const[KVM_SET_NR_MMU_PAGES], arg int
 ioctl$KVM_GET_NR_MMU_PAGES(fd fd_kvmvm, cmd const[KVM_GET_NR_MMU_PAGES], arg intptr)
 ioctl$KVM_REINJECT_CONTROL(fd fd_kvmvm, cmd const[KVM_REINJECT_CONTROL], arg ptr[in, kvm_reinject_control])
 ioctl$KVM_HYPERV_EVENTFD(fd fd_kvmvm, cmd const[KVM_HYPERV_EVENTFD], arg ptr[in, kvm_hyperv_eventfd])
+ioctl$KVM_X86_SET_MSR_FILTER(fd fd_kvmvm, cmd const[KVM_X86_SET_MSR_FILTER], arg ptr[in, kvm_msr_filter])
 
 # Defined by include/linux/kvm_host.h, but for some reason wouldn't extract.
 define KVM_MAX_IRQ_ROUTES	4096
@@ -218,25 +419,35 @@ ioctl$KVM_CAP_X86_NOTIFY_VMEXIT(fd fd_kvmvm, cmd const[KVM_ENABLE_CAP], arg ptr[
 ioctl$KVM_CAP_X86_APIC_BUS_CYCLES_NS(fd fd_kvmvm, cmd const[KVM_ENABLE_CAP], arg ptr[in, kvm_enable_cap[KVM_CAP_X86_APIC_BUS_CYCLES_NS, int64]])
 ioctl$KVM_CAP_PMU_CAPABILITY(fd fd_kvmvm, cmd const[KVM_ENABLE_CAP], arg ptr[in, kvm_enable_cap[KVM_CAP_PMU_CAPABILITY, int64]])
 
-ioctl$KVM_TRANSLATE(fd fd_kvmcpu, cmd const[KVM_TRANSLATE], arg ptr[in, kvm_translation])
-ioctl$KVM_GET_MSRS(fd fd_kvmcpu, cmd const[KVM_GET_MSRS], arg ptr[out, kvm_msrs])
+ioctl$KVM_TRANSLATE(fd fd_kvmcpu, cmd const[KVM_TRANSLATE], arg ptr[inout, kvm_translation])
+# KVM_GET_MSRS can be both a system and a vcpu ioctl: https://docs.kernel.org/virt/kvm/api.html#kvm-get-msrs
+ioctl$KVM_GET_MSRS_sys(fd fd_kvm, cmd const[KVM_GET_MSRS], arg ptr[inout, kvm_msrs])
+ioctl$KVM_GET_MSRS_cpu(fd fd_kvmcpu, cmd const[KVM_GET_MSRS], arg ptr[inout, kvm_msrs])
 ioctl$KVM_SET_MSRS(fd fd_kvmcpu, cmd const[KVM_SET_MSRS], arg ptr[in, kvm_msrs])
 ioctl$KVM_SET_CPUID(fd fd_kvmcpu, cmd const[KVM_SET_CPUID], arg ptr[in, kvm_cpuid])
 # NEED: we should be able to read kvm_cpuid2 with KVM_GET_CPUID2, alter few bits and then call KVM_SET_CPUID2 with that object.
 ioctl$KVM_GET_CPUID2(fd fd_kvmcpu, cmd const[KVM_GET_CPUID2], arg ptr[out, kvm_cpuid2])
 ioctl$KVM_SET_CPUID2(fd fd_kvmcpu, cmd const[KVM_SET_CPUID2], arg ptr[in, kvm_cpuid2])
+ioctl$KVM_GET_SUPPORTED_CPUID(fd fd_kvm, cmd const[KVM_GET_SUPPORTED_CPUID], arg ptr[inout, kvm_cpuid2])
+# KVM_GET_SUPPORTED_HV_CPUID is both a system and a vcpu ioctl: https://docs.kernel.org/virt/kvm/api.html#kvm-get-supported-hv-cpuid
+ioctl$KVM_GET_SUPPORTED_HV_CPUID_sys(fd fd_kvm, cmd const[KVM_GET_SUPPORTED_HV_CPUID], arg ptr[inout, kvm_cpuid2])
+ioctl$KVM_GET_SUPPORTED_HV_CPUID_cpu(fd fd_kvmcpu, cmd const[KVM_GET_SUPPORTED_HV_CPUID], arg ptr[inout, kvm_cpuid2])
+ioctl$KVM_GET_EMULATED_CPUID(fd fd_kvm, cmd const[KVM_GET_EMULATED_CPUID], arg ptr[inout, kvm_cpuid2])
 
 ioctl$KVM_GET_FPU(fd fd_kvmcpu, cmd const[KVM_GET_FPU], arg ptr[out, kvm_fpu])
 ioctl$KVM_SET_FPU(fd fd_kvmcpu, cmd const[KVM_SET_FPU], arg ptr[in, kvm_fpu])
 ioctl$KVM_GET_DEBUGREGS(fd fd_kvmcpu, cmd const[KVM_GET_DEBUGREGS], arg ptr[out, kvm_debugregs])
 ioctl$KVM_SET_DEBUGREGS(fd fd_kvmcpu, cmd const[KVM_SET_DEBUGREGS], arg ptr[in, kvm_debugregs])
-ioctl$KVM_GET_XCRS(fd fd_kvmcpu, cmd const[KVM_GET_XCRS], arg ptr[in, kvm_xcrs])
+ioctl$KVM_GET_XCRS(fd fd_kvmcpu, cmd const[KVM_GET_XCRS], arg ptr[out, kvm_xcrs])
 ioctl$KVM_SET_XCRS(fd fd_kvmcpu, cmd const[KVM_SET_XCRS], arg ptr[in, kvm_xcrs])
 ioctl$KVM_GET_XSAVE(fd fd_kvmcpu, cmd const[KVM_GET_XSAVE], arg ptr[out, kvm_xsave])
 ioctl$KVM_SET_XSAVE(fd fd_kvmcpu, cmd const[KVM_SET_XSAVE], arg ptr[in, kvm_xsave])
-ioctl$KVM_SET_TSC_KHZ(fd fd_kvmcpu, cmd const[KVM_SET_TSC_KHZ], arg intptr)
-ioctl$KVM_GET_TSC_KHZ(fd fd_kvmcpu, cmd const[KVM_GET_TSC_KHZ])
-ioctl$KVM_GET_LAPIC(fd fd_kvmcpu, cmd const[KVM_GET_LAPIC], arg ptr[in, kvm_lapic_state])
+# KVM_SET_TSC_KHZ and KVM_GET_TSC_KHZ are both vcpu and vm ioctls: https://docs.kernel.org/virt/kvm/api.html#kvm-set-tsc-khz
+ioctl$KVM_SET_TSC_KHZ_cpu(fd fd_kvmcpu, cmd const[KVM_SET_TSC_KHZ], arg intptr)
+ioctl$KVM_SET_TSC_KHZ_vm(fd fd_kvmvm, cmd const[KVM_SET_TSC_KHZ], arg intptr)
+ioctl$KVM_GET_TSC_KHZ_cpu(fd fd_kvmcpu, cmd const[KVM_GET_TSC_KHZ])
+ioctl$KVM_GET_TSC_KHZ_vm(fd fd_kvmvm, cmd const[KVM_GET_TSC_KHZ])
+ioctl$KVM_GET_LAPIC(fd fd_kvmcpu, cmd const[KVM_GET_LAPIC], arg ptr[out, kvm_lapic_state])
 ioctl$KVM_SET_LAPIC(fd fd_kvmcpu, cmd const[KVM_SET_LAPIC], arg ptr[in, kvm_lapic_state])
 ioctl$KVM_NMI(fd fd_kvmcpu, cmd const[KVM_NMI])
 ioctl$KVM_SMI(fd fd_kvmcpu, cmd const[KVM_SMI])
@@ -244,7 +455,7 @@ ioctl$KVM_TPR_ACCESS_REPORTING(fd fd_kvmcpu, cmd const[KVM_TPR_ACCESS_REPORTING]
 ioctl$KVM_SET_VAPIC_ADDR(fd fd_kvmcpu, cmd const[KVM_SET_VAPIC_ADDR], arg ptr[in, flags[kvm_guest_addrs, int64]])
 ioctl$KVM_X86_SETUP_MCE(fd fd_kvmcpu, cmd const[KVM_X86_SETUP_MCE], arg ptr[in, kvm_mce_cap])
 ioctl$KVM_X86_SET_MCE(fd fd_kvmcpu, cmd const[KVM_X86_SET_MCE], arg ptr[in, kvm_x86_mce])
-ioctl$KVM_GET_NESTED_STATE(fd fd_kvmcpu, cmd const[KVM_GET_NESTED_STATE], arg ptr[out, kvm_nested_state_arg])
+ioctl$KVM_GET_NESTED_STATE(fd fd_kvmcpu, cmd const[KVM_GET_NESTED_STATE], arg ptr[inout, kvm_nested_state_arg])
 ioctl$KVM_SET_NESTED_STATE(fd fd_kvmcpu, cmd const[KVM_SET_NESTED_STATE], arg ptr[in, kvm_nested_state_arg])
 # NEED: arch constraints for syscalls. These are amd64/386-specific, but consts are present on all arches, so they are not disabled on other arches.
 ioctl$KVM_CAP_HYPERV_SYNIC(fd fd_kvmcpu, cmd const[KVM_ENABLE_CAP], arg ptr[in, kvm_enable_cap[KVM_CAP_HYPERV_SYNIC, void]])
@@ -257,6 +468,11 @@ ioctl$KVM_CAP_SYNC_REGS(fd fd_kvmcpu, cmd const[KVM_ENABLE_CAP], arg ptr[in, kvm
 
 ioctl$KVM_SET_MEMORY_ATTRIBUTES(fd fd_kvmvm, cmd const[KVM_SET_MEMORY_ATTRIBUTES], arg ptr[in, kvm_memory_attributes])
 ioctl$KVM_GET_XSAVE2(fd fd_kvmcpu, cmd const[KVM_GET_XSAVE2], arg vma)
+
+# KVM_GET_SREGS2/KVM_SET_SREGS2 are only supported on x86 - unlike KVM_GET_SREGS/KVM_SET_SREGS.
+# https://docs.kernel.org/virt/kvm/api.html#kvm-get-sregs2
+ioctl$KVM_GET_SREGS2(fd fd_kvmcpu, cmd const[KVM_GET_SREGS2], arg ptr[out, kvm_sregs2])
+ioctl$KVM_SET_SREGS2(fd fd_kvmcpu, cmd const[KVM_SET_SREGS2], arg ptr[in, kvm_sregs2])
 
 kvm_nested_state {
 	flags	flags[kvm_nested_state_flags, int16]
@@ -365,9 +581,10 @@ kvm_xcr {
 }
 
 kvm_xcrs {
-	nr	len[xcrs, int32]
+	nr	int32[0:KVM_MAX_XCRS]
 	flags	int32
-	xcrs	array[kvm_xcr]
+	xcrs	array[kvm_xcr, KVM_MAX_XCRS]
+	pad	array[const[0, int64], 16]
 }
 
 kvm_xsave {
@@ -416,6 +633,24 @@ kvm_hyperv_eventfd {
 	padding	array[const[0, int32], 3]
 }
 
+kvm_msr_filter_range_flags = KVM_MSR_FILTER_READ, KVM_MSR_FILTER_WRITE
+
+kvm_msr_filter_range {
+	flags	flags[kvm_msr_filter_range_flags, int32]
+	nmsrs	bitsize[bitmap, int32]
+	base	int32
+	bitmap	ptr[in, array[int8]]
+}
+
+define KVM_MSR_FILTER_DEFAULT_ALLOW	(0 << 0)
+define KVM_MSR_FILTER_DEFAULT_DENY	(1 << 0)
+kvm_msr_filter_flags = KVM_MSR_FILTER_DEFAULT_ALLOW, KVM_MSR_FILTER_DEFAULT_DENY
+
+kvm_msr_filter {
+	flags	flags[kvm_msr_filter_flags, int32]
+	ranges	array[kvm_msr_filter_range, KVM_MSR_FILTER_MAX_RANGES]
+}
+
 kvm_fpu {
 	fpr		array[const[0, int64], 16]
 	fcw		int16
@@ -458,7 +693,7 @@ kvm_pit_config {
 }
 
 kvm_lapic_state {
-	regs	array[int8, 1024]
+	regs	array[int8, KVM_APIC_REG_SIZE]
 }
 
 kvm_msr_list {
@@ -542,4 +777,29 @@ kvm_memory_attributes {
 	size		flags[kvm_guest_addr_size, int64]
 	attributes	flags[kvm_memory_attribute_flags, int64]
 	flags		const[0, int64]
+}
+
+kvm_sregs2_flags = KVM_SREGS2_FLAGS_PDPTRS_VALID
+
+kvm_sregs2 {
+	cs	kvm_segment
+	ds	kvm_segment
+	es	kvm_segment
+	fs	kvm_segment
+	gs	kvm_segment
+	ss	kvm_segment
+	tr	kvm_segment
+	ldt	kvm_segment
+	gdt	kvm_dtable
+	idt	kvm_dtable
+	cr0	flags[kvm_x86_cr0, int64]
+	cr2	const[0, int64]
+# TODO: this should point to page table
+	cr3	flags[kvm_guest_addrs, int64]
+	cr4	flags[kvm_x86_cr4, int64]
+	cr8	int64[0:15]
+	efer	flags[kvm_x86_efer, int64]
+	apic	flags[kvm_guest_addrs, int64]
+	flags	flags[kvm_sregs2_flags, int64]
+	pdptrs	array[int64, 4]
 }

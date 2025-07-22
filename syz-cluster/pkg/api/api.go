@@ -39,6 +39,7 @@ type Tree struct {
 type BuildRequest struct {
 	Arch       string `json:"arch"`
 	TreeName   string `json:"tree_name"`
+	TreeURL    string `json:"tree_url"`
 	CommitHash string `json:"commit_hash"`
 	ConfigName string `json:"config_name"` // These are known to both the triage and build steps.
 	SeriesID   string `json:"series_id"`
@@ -53,10 +54,12 @@ type BuildResult struct {
 type Build struct {
 	Arch         string    `json:"arch"`
 	TreeName     string    `json:"tree_name"`
+	TreeURL      string    `json:"tree_url"`
 	CommitHash   string    `json:"commit_hash"`
 	CommitDate   time.Time `json:"commit_date"`
 	ConfigName   string    `json:"config_name"`
 	SeriesID     string    `json:"series_id"`
+	Compiler     string    `json:"compiler"`
 	BuildSuccess bool      `json:"build_success"`
 }
 
@@ -126,10 +129,7 @@ type NewSession struct {
 
 type SessionReport struct {
 	ID         string     `json:"id"`
-	Cc         []string   `json:"cc"`
 	Moderation bool       `json:"moderation"`
-	BaseRepo   string     `json:"base_repo"`
-	BaseCommit string     `json:"base_commit"`
 	Series     *Series    `json:"series"`
 	Findings   []*Finding `json:"findings"`
 	Link       string     `json:"link"` // URL to the web dashboard.
@@ -145,6 +145,9 @@ type Finding struct {
 }
 
 type BuildInfo struct {
+	TreeName   string `json:"tree_name"`
+	TreeURL    string `json:"tree_url"`
+	BaseCommit string `json:"base_commit"`
 	Arch       string `json:"arch"`
 	Compiler   string `json:"compiler"`
 	ConfigLink string `json:"config_link"`

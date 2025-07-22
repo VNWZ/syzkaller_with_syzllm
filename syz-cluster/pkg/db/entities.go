@@ -4,9 +4,8 @@
 package db
 
 import (
-	"time"
-
 	"cloud.google.com/go/spanner"
+	"time"
 )
 
 type Series struct {
@@ -39,13 +38,16 @@ type Patch struct {
 type Build struct {
 	ID         string             `spanner:"ID"`
 	TreeName   string             `spanner:"TreeName"`
+	TreeURL    string             `spanner:"TreeURL"`
 	CommitHash string             `spanner:"CommitHash"`
 	CommitDate time.Time          `spanner:"CommitDate"`
 	SeriesID   spanner.NullString `spanner:"SeriesID"`
 	Arch       string             `spanner:"Arch"`
 	ConfigName string             `spanner:"ConfigName"`
 	ConfigURI  string             `spanner:"ConfigURI"`
+	LogURI     string             `spanner:"LogURI"`
 	Status     string             `spanner:"Status"`
+	Compiler   string             `spanner:"Compiler"`
 }
 
 func (b *Build) SetSeriesID(val string) {
