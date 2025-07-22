@@ -60,6 +60,7 @@ func DummySeries() *api.Series {
 		ExtID: "ext-id",
 		Title: "test series name",
 		Link:  "http://link/to/series",
+		Cc:    []string{"first@user.com", "second@user.com"},
 		Patches: []api.SeriesPatch{
 			{
 				Seq:   1,
@@ -74,6 +75,7 @@ func DummyBuild() *api.Build {
 	return &api.Build{
 		Arch:       "amd64",
 		TreeName:   "mainline",
+		TreeURL:    "https://git/repo",
 		ConfigName: "config",
 		CommitHash: "abcd",
 		Compiler:   "compiler",
