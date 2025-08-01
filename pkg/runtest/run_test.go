@@ -95,6 +95,7 @@ func test(t *testing.T, sysTarget *targets.Target) {
 			want := flatrpc.FeatureCoverage |
 				flatrpc.FeatureExtraCoverage |
 				flatrpc.FeatureDelayKcovMmap |
+				flatrpc.FeatureKcovResetIoctl |
 				flatrpc.FeatureSandboxNone |
 				flatrpc.FeatureFault |
 				flatrpc.FeatureNetDevices |
@@ -108,7 +109,7 @@ func test(t *testing.T, sysTarget *targets.Target) {
 				flatrpc.FeatureSwap
 			for feat, name := range flatrpc.EnumNamesFeature {
 				if features&feat != want&feat {
-					t.Errorf("expect featue %v to be %v, but it is %v",
+					t.Errorf("expect feature %v to be %v, but it is %v",
 						name, want&feat != 0, features&feat != 0)
 				}
 			}
