@@ -26,6 +26,9 @@ type Handler struct {
 }
 
 func (h *Handler) PollReportsLoop(ctx context.Context, pollPeriod time.Duration) {
+	defer log.Printf("reporter server polling aborted")
+	log.Printf("reporter server polling started")
+
 	for {
 		_, err := h.PollAndReport(ctx)
 		if err != nil {
@@ -86,6 +89,7 @@ func (h *Handler) report(ctx context.Context, rep *api.SessionReport) error {
 		// We assume that email reporting is used for series received over emails.
 		toSend.InReplyTo = rep.Series.ExtID
 		toSend.To = rep.Series.Cc
+		toSend.Cc = append(toSend.Cc, h.emailConfig.ReportCC...)
 	}
 	msgID, err := h.sender(ctx, toSend)
 	if err != nil {

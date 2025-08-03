@@ -206,6 +206,17 @@ loop:
 				}:
 				}
 				log.Logf(0, "patched-only: %s", ret.origReport.Title)
+				// Now that we know this bug only affects the patch kernel, we can spend more time
+				// generating a minimalistic repro and a C repro.
+				if !ret.fullRepro {
+					reproLoop.Enqueue(&Crash{
+						Report: &report.Report{
+							Title:  ret.origReport.Title,
+							Output: ret.repro.Prog.Serialize(),
+						},
+						FullRepro: true,
+					})
+				}
 			} else {
 				dc.store.BaseCrashed(ret.origReport.Title, ret.origReport.Report)
 				log.Logf(0, "crashes both: %s / %s", ret.origReport.Title, ret.crashReport.Title)
@@ -220,7 +231,7 @@ loop:
 				log.Logf(1, "found repro for %q (orig title: %q, reliability: %2.f), took %.2f minutes",
 					ret.Repro.Report.Title, origTitle, ret.Repro.Reliability, ret.Stats.TotalTime.Minutes())
 				g.Go(func() error {
-					runner.Run(ctx, ret.Repro)
+					runner.Run(ctx, ret.Repro, ret.Crash.FullRepro)
 					return nil
 				})
 			} else {
@@ -271,6 +282,15 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 		// The feature is disabled.
 		return nil
 	}
+
+	// First wait until we have almost triaged all of the corpus.
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-dc.waitCorpusTriage(ctx, corpusTriageToMonitor):
+	}
+
+	// By this moment, we must have coverage filters already filled out.
 	focusPCs := 0
 	// The last one is "everything else", so it's not of interest.
 	coverFilters := dc.new.coverFilters
@@ -283,13 +303,6 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 		return nil
 	}
 
-	// First wait until we have almost triaged all of the corpus.
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-dc.waitCorpusTriage(ctx, corpusTriageToMonitor):
-	}
-
 	// Then give the fuzzer some change to get through.
 	select {
 	case <-time.After(dc.cfg.FuzzToReachPatched):
@@ -297,9 +310,9 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 		return nil
 	}
 	focusAreaStats := dc.new.progsPerArea()
-	if focusAreaStats[modifiedArea]+focusAreaStats[includesArea] > 0 {
-		log.Logf(0, "fuzzer has reached the modified code (%d + %d), continuing fuzzing",
-			focusAreaStats[modifiedArea], focusAreaStats[includesArea])
+	if focusAreaStats[symbolsArea]+focusAreaStats[filesArea]+focusAreaStats[includesArea] > 0 {
+		log.Logf(0, "fuzzer has reached the modified code (%d + %d + %d), continuing fuzzing",
+			focusAreaStats[symbolsArea], focusAreaStats[filesArea], focusAreaStats[includesArea])
 		return nil
 	}
 	log.Logf(0, "fuzzer has not reached the modified code in %s, aborting",
@@ -310,13 +323,23 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 // TODO: instead of this limit, consider expotentially growing delays between reproduction attempts.
 const maxReproAttempts = 6
 
-func (dc *diffContext) NeedRepro(crash *Crash) bool {
-	if strings.Contains(crash.Title, "no output") ||
-		strings.Contains(crash.Title, "lost connection") ||
-		strings.Contains(crash.Title, "stall") ||
-		strings.Contains(crash.Title, "SYZ") {
+func skipDiffRepro(title string) bool {
+	if strings.Contains(title, "no output") ||
+		strings.Contains(title, "lost connection") ||
+		strings.Contains(title, "detected stall") ||
+		strings.Contains(title, "SYZ") {
 		// Don't waste time reproducing these.
-		return false
+		return true
+	}
+	return false
+}
+
+func (dc *diffContext) NeedRepro(crash *Crash) bool {
+	if crash.FullRepro {
+		return true
+	}
+	if skipDiffRepro(crash.Title) {
+		return true
 	}
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -339,7 +362,7 @@ func (dc *diffContext) RunRepro(ctx context.Context, crash *Crash) *ReproResult 
 		Features: dc.new.features,
 		Reporter: dc.new.reporter,
 		Pool:     dc.new.pool,
-		Fast:     true,
+		Fast:     !crash.FullRepro,
 	})
 	if res != nil && res.Report != nil {
 		dc.mu.Lock()
@@ -542,7 +565,11 @@ func (kc *kernelContext) CoverageFilter(modules []*vminfo.KernelModule) ([]uint6
 		return nil, fmt.Errorf("failed to init coverage filter: %w", err)
 	}
 	kc.coverFilters = filters
-	log.Logf(0, "cover filter size: %d", len(filters.ExecutorFilter))
+	for _, area := range filters.Areas {
+		log.Logf(0, "area %q: %d PCs in the cover filter",
+			area.Name, len(area.CoverPCs))
+	}
+	log.Logf(0, "executor cover filter: %d PCs", len(filters.ExecutorFilter))
 	if kc.http != nil {
 		kc.http.Cover.Store(&CoverageInfo{
 			Modules:         modules,
@@ -636,6 +663,7 @@ type reproRunnerResult struct {
 	origReport  *report.Report
 	crashReport *report.Report
 	repro       *repro.Result
+	fullRepro   bool // whether this was a full reproduction
 }
 
 const (
@@ -652,7 +680,7 @@ const (
 // To avoid reporting false positives, the function does not require the kernel to crash with exactly
 // the same crash title as in the original crash report. Any single crash is accepted.
 // The result is sent back over the rr.done channel.
-func (rr *reproRunner) Run(ctx context.Context, r *repro.Result) {
+func (rr *reproRunner) Run(ctx context.Context, r *repro.Result, fullRepro bool) {
 	if r.Reliability < reliabilityCutOff {
 		log.Logf(1, "%s: repro is too unreliable, skipping", r.Report.Title)
 		return
@@ -670,7 +698,7 @@ func (rr *reproRunner) Run(ctx context.Context, r *repro.Result) {
 		rr.kernel.pool.ReserveForRun(min(cnt, pool.Total()))
 	}()
 
-	ret := reproRunnerResult{origReport: r.Report, repro: r}
+	ret := reproRunnerResult{origReport: r.Report, repro: r, fullRepro: fullRepro}
 	for doneRuns := 0; doneRuns < needRuns; {
 		if ctx.Err() != nil {
 			return
@@ -721,18 +749,32 @@ func (rr *reproRunner) Run(ctx context.Context, r *repro.Result) {
 }
 
 const (
-	modifiedArea = "modified"
+	symbolsArea  = "symbols"
+	filesArea    = "files"
 	includesArea = "included"
 )
 
-func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte) {
+func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte, baseHashes, patchedHashes map[string]string) {
+	funcs := modifiedSymbols(baseHashes, patchedHashes)
+	if len(funcs) > 0 {
+		log.Logf(0, "adding modified_functions to focus areas: %q", funcs)
+		cfg.Experimental.FocusAreas = append(cfg.Experimental.FocusAreas,
+			mgrconfig.FocusArea{
+				Name: symbolsArea,
+				Filter: mgrconfig.CovFilterCfg{
+					Functions: funcs,
+				},
+				Weight: 6.0,
+			})
+	}
+
 	direct, transitive := affectedFiles(cfg, gitPatches)
 	if len(direct) > 0 {
 		sort.Strings(direct)
-		log.Logf(0, "adding directly modified files to focus_order: %q", direct)
+		log.Logf(0, "adding directly modified files to focus areas: %q", direct)
 		cfg.Experimental.FocusAreas = append(cfg.Experimental.FocusAreas,
 			mgrconfig.FocusArea{
-				Name: modifiedArea,
+				Name: filesArea,
 				Filter: mgrconfig.CovFilterCfg{
 					Files: direct,
 				},
@@ -742,7 +784,7 @@ func PatchFocusAreas(cfg *mgrconfig.Config, gitPatches [][]byte) {
 
 	if len(transitive) > 0 {
 		sort.Strings(transitive)
-		log.Logf(0, "adding transitively affected to focus_order: %q", transitive)
+		log.Logf(0, "adding transitively affected to focus areas: %q", transitive)
 		cfg.Experimental.FocusAreas = append(cfg.Experimental.FocusAreas,
 			mgrconfig.FocusArea{
 				Name: includesArea,
@@ -807,4 +849,22 @@ func affectedFiles(cfg *mgrconfig.Config, gitPatches [][]byte) (direct, transiti
 		transitive = append(transitive, name)
 	}
 	return
+}
+
+// If there are too many different symbols, they are no longer specific enough.
+// Don't use them to focus the fuzzer.
+const modifiedSymbolThreshold = 0.05
+
+func modifiedSymbols(baseHashes, patchedHashes map[string]string) []string {
+	var ret []string
+	for name, hash := range patchedHashes {
+		if baseHash, ok := baseHashes[name]; !ok || baseHash != hash {
+			ret = append(ret, name)
+			if float64(len(ret)) > float64(len(patchedHashes))*modifiedSymbolThreshold {
+				return nil
+			}
+		}
+	}
+	sort.Strings(ret)
+	return ret
 }

@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -875,10 +876,13 @@ func reportCrash(c context.Context, build *Build, req *dashapi.Crash) (*Bug, err
 		log.Infof(c, "not saving crash for %q", bug.Title)
 	}
 
+	subsystemService := getNsConfig(c, ns).Subsystems.Service
+
 	newSubsystems := []*subsystem.Subsystem{}
 	// Recalculate subsystems on the first saved crash and on the first saved repro,
 	// unless a user has already manually specified them.
-	calculateSubsystems := save &&
+	calculateSubsystems := subsystemService != nil &&
+		save &&
 		!bug.hasUserSubsystems() &&
 		(bug.NumCrashes == 0 ||
 			bug.ReproLevel == ReproLevelNone && reproLevel != ReproLevelNone)
@@ -909,7 +913,7 @@ func reportCrash(c context.Context, build *Build, req *dashapi.Crash) (*Bug, err
 			bug.HasReport = true
 		}
 		if calculateSubsystems {
-			bug.SetAutoSubsystems(c, newSubsystems, now, getNsConfig(c, ns).Subsystems.Revision)
+			bug.SetAutoSubsystems(c, newSubsystems, now, subsystemService.Revision)
 		}
 		bug.increaseCrashStats(now)
 		bug.HappenedOn = mergeString(bug.HappenedOn, build.Manager)
@@ -1936,9 +1940,13 @@ func apiSendEmail(c context.Context, payload io.Reader) (interface{}, error) {
 	if err := json.NewDecoder(payload).Decode(req); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 	}
+	var headers mail.Header
+	if req.InReplyTo != "" {
+		headers = mail.Header{"In-Reply-To": []string{req.InReplyTo}}
+	}
 	return nil, sendEmail(c, &aemail.Message{
 		Sender:  req.Sender,
-		ReplyTo: req.InReplyTo,
+		Headers: headers,
 		To:      req.To,
 		Cc:      req.Cc,
 		Subject: req.Subject,

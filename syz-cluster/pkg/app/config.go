@@ -38,6 +38,8 @@ type EmailConfig struct {
 	DocsLink string `yaml:"docs"`
 	// Contact email.
 	SupportEmail string `yaml:"supportEmail"`
+	// The address will be suggested for the Tested-by tag.
+	CreditEmail string `yaml:"creditEmail"`
 	// The means to send the emails ("smtp", "dashapi").
 	Sender string `yaml:"sender"`
 	// Will be used if Sender is "smtp".
@@ -46,8 +48,10 @@ type EmailConfig struct {
 	Dashapi *DashapiConfig `yaml:"dashapiConfig"`
 	// Moderation requests will be sent there.
 	ModerationList string `yaml:"moderationList"`
-	// The list we listen on.
+	// The list email-reporter listens on.
 	ArchiveList string `yaml:"archiveList"`
+	// The lists/emails to be Cc'd for actual reports (not moderation).
+	ReportCC []string `yaml:"reportCc"`
 	// Lore git archive to poll for incoming messages.
 	LoreArchiveURL string `yaml:"loreArchiveURL"`
 	// The prefix which will be added to all reports' titles.
