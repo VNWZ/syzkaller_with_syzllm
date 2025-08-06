@@ -114,9 +114,22 @@ static void cover_open(cover_t* cov, bool extra)
 								       : kCoverSize;
 	if (ioctl(cov->fd, kcov_init_trace, cover_size))
 		fail("cover init trace write failed");
-	cov->mmap_alloc_size = cover_size * (is_kernel_64_bit ? 8 : 4);
+	cov->data_size = cover_size * (is_kernel_64_bit ? 8 : 4);
 	if (pkeys_enabled)
 		debug("pkey protection enabled\n");
+}
+
+static void cover_close(cover_t* cov)
+{
+	if (cov->fd == -1)
+		fail("attempting to close an invalid cover fd");
+	if (cov->enabled) {
+		if (ioctl(cov->fd, KCOV_DISABLE, 0))
+			fail("KCOV_DISABLE failed");
+		cov->enabled = false;
+	}
+	close(cov->fd);
+	cov->fd = -1;
 }
 
 static void cover_protect(cover_t* cov)
@@ -133,35 +146,37 @@ static void cover_unprotect(cover_t* cov)
 
 static void cover_mmap(cover_t* cov)
 {
-	if (cov->data != NULL)
+	if (cov->mmap_alloc_ptr != NULL)
 		fail("cover_mmap invoked on an already mmapped cover_t object");
-	if (cov->mmap_alloc_size == 0)
+	if (cov->data_size == 0)
 		fail("cover_t structure is corrupted");
 	// Allocate kcov buffer plus two guard pages surrounding it.
-	char* mapped = (char*)mmap(NULL, cov->mmap_alloc_size + 2 * SYZ_PAGE_SIZE,
-				   PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	if (mapped == MAP_FAILED)
+	cov->mmap_alloc_size = cov->data_size + 2 * SYZ_PAGE_SIZE;
+	cov->mmap_alloc_ptr = (char*)mmap(NULL, cov->mmap_alloc_size,
+					  PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (cov->mmap_alloc_ptr == MAP_FAILED)
 		exitf("failed to preallocate kcov buffer");
 	// Now map the kcov buffer to the file, overwriting the existing mapping above.
 	int prot = flag_read_only_coverage ? PROT_READ : (PROT_READ | PROT_WRITE);
-	cov->data = (char*)mmap(mapped + SYZ_PAGE_SIZE, cov->mmap_alloc_size,
-				prot, MAP_SHARED | MAP_FIXED, cov->fd, 0);
-	if (cov->data == MAP_FAILED)
+	void* data_buf = (char*)mmap(cov->mmap_alloc_ptr + SYZ_PAGE_SIZE, cov->data_size,
+				     prot, MAP_SHARED | MAP_FIXED, cov->fd, 0);
+	if (data_buf == MAP_FAILED)
 		exitf("cover mmap failed");
-	if (pkeys_enabled && pkey_mprotect(cov->data, cov->mmap_alloc_size, prot, RESERVED_PKEY))
+	if (pkeys_enabled && pkey_mprotect(data_buf, cov->data_size, prot, RESERVED_PKEY))
 		exitf("failed to pkey_mprotect kcov buffer");
-	cov->data_end = cov->data + cov->mmap_alloc_size;
+	cov->data = (char*)data_buf;
+	cov->data_end = cov->data + cov->data_size;
 	cov->data_offset = is_kernel_64_bit ? sizeof(uint64_t) : sizeof(uint32_t);
 	cov->pc_offset = 0;
 }
 
 static void cover_munmap(cover_t* cov)
 {
-	if (cov->data == NULL)
+	if (cov->mmap_alloc_ptr == NULL)
 		fail("cover_munmap invoked on a non-mmapped cover_t object");
-	if (munmap(cov->data - SYZ_PAGE_SIZE, cov->mmap_alloc_size + 2 * SYZ_PAGE_SIZE))
+	if (munmap(cov->mmap_alloc_ptr, cov->mmap_alloc_size))
 		fail("cover_munmap failed");
-	cov->data = NULL;
+	cov->mmap_alloc_ptr = NULL;
 }
 
 static void cover_enable(cover_t* cov, bool collect_comps, bool extra)
@@ -173,6 +188,7 @@ static void cover_enable(cover_t* cov, bool collect_comps, bool extra)
 	if (!extra) {
 		if (ioctl(cov->fd, KCOV_ENABLE, kcov_mode))
 			exitf("cover enable write trace failed, mode=%d", kcov_mode);
+		cov->enabled = true;
 		return;
 	}
 	kcov_remote_arg<1> arg = {
@@ -185,6 +201,7 @@ static void cover_enable(cover_t* cov, bool collect_comps, bool extra)
 	arg.handles[0] = kcov_remote_handle(KCOV_SUBSYSTEM_USB, procid + 1);
 	if (ioctl(cov->fd, KCOV_REMOTE_ENABLE, &arg))
 		exitf("remote cover enable write trace failed");
+	cov->enabled = true;
 }
 
 static void cover_reset(cover_t* cov)
@@ -303,8 +320,8 @@ static const char* setup_delay_kcov()
 	cov.fd = kCoverFd;
 	cover_open(&cov, false);
 	cover_mmap(&cov);
-	char* first = cov.data;
-	cov.data = nullptr;
+	char* first = cov.mmap_alloc_ptr;
+	cov.mmap_alloc_ptr = nullptr;
 	cover_mmap(&cov);
 	// If delayed kcov mmap is not supported by the kernel,
 	// accesses to the second mapping will crash.
@@ -316,10 +333,10 @@ static const char* setup_delay_kcov()
 			fail("clock_gettime failed");
 		error = "kernel commit b3d7fe86fbd0 is not present";
 	} else {
-		munmap(cov.data - SYZ_PAGE_SIZE, cov.mmap_alloc_size + 2 * SYZ_PAGE_SIZE);
+		munmap(cov.mmap_alloc_ptr, cov.mmap_alloc_size);
 	}
-	munmap(first - SYZ_PAGE_SIZE, cov.mmap_alloc_size + 2 * SYZ_PAGE_SIZE);
-	close(cov.fd);
+	munmap(first, cov.mmap_alloc_size);
+	cover_close(&cov);
 	return error;
 }
 
@@ -328,6 +345,8 @@ static const char* setup_kcov_reset_ioctl()
 	int fd = open("/sys/kernel/debug/kcov", O_RDWR);
 	if (fd == -1)
 		return "open of /sys/kernel/debug/kcov failed";
+	close(fd);
+
 	cover_t cov = {};
 	cov.fd = kCoverFd;
 	cover_open(&cov, false);
@@ -343,7 +362,7 @@ static const char* setup_kcov_reset_ioctl()
 		error = "kernel does not support ioctl(KCOV_RESET_TRACE)";
 	}
 	cover_munmap(&cov);
-	close(cov.fd);
+	cover_close(&cov);
 	return error;
 }
 
