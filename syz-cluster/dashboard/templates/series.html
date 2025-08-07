@@ -96,11 +96,11 @@
                     <th>Status</th>
                     <td>{{.Status}}</td>
                 </tr>
-                {{if not .SkipReason.IsNull}}
+                {{if or (not .SkipReason.IsNull) .TriageLogURI}}
                 <tr>
-                    <th>Skipped</th>
+                    <th>Triaged</th>
                     <td>
-                        {{.SkipReason.StringVal}}
+                        {{if not .SkipReason.IsNull}}Skipped: {{.SkipReason.StringVal}}{{else}}OK{{end}}
                         {{if .TriageLogURI}}
                             <a href="/sessions/{{.ID}}/triage_log">[Log]</a>
                         {{end}}
@@ -128,8 +128,8 @@
             {{range .Tests}}
                 <tr>
                     <td>{{.TestName}}</td>
-                    <td>{{if .BaseBuild}}{{.BaseBuild.CommitHash}}{{end}}</td>
-                    <td>{{if .PatchedBuild}}{{.PatchedBuild.CommitHash}}[patched]{{end}}</td>
+                    <td>{{if .BaseBuild}}{{template "build_info" .BaseBuild}}{{end}}</td>
+                    <td>{{if .PatchedBuild}}{{template "build_info" .PatchedBuild}}[patched]{{end}}</td>
                     <th>
                         {{.Result}}
                         {{if .LogURI}}

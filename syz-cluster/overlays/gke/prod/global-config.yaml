@@ -7,16 +7,24 @@ metadata:
   name: global-config
 data:
   config.yaml: |
-    parallelWorkflows: 5
+    URL: https://ci.syzbot.org
+    parallelWorkflows: 7
     loreArchives:
       - netdev
+      - bpf
       - linux-ext4
+      - netfilter-devel
+      - kvm
     emailReporting:
       name: "syzbot ci"
       sender: dashapi
       supportEmail: syzkaller@googlegroups.com
+      creditEmail: syzbot@syzkaller.appspotmail.com
       archiveList: syzbot@lists.linux.dev
       moderationList: syzkaller-upstream-moderation@googlegroups.com
+      reportCc:
+        - syzkaller-bugs@googlegroups.com
+      loreArchiveURL: https://lore.kernel.org/syzbot/0
       dashapiConfig:
         addr: https://syzkaller.appspot.com
         client: gke-email-reporter

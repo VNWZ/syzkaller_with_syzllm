@@ -34,6 +34,9 @@ func NewLKMLEmailStream(repoFolder string, client *api.ReporterClient,
 	if cfg.Dashapi != nil {
 		ownEmails = append(ownEmails, cfg.Dashapi.From)
 	}
+	if cfg.SMTP != nil {
+		ownEmails = append(ownEmails, cfg.SMTP.From)
+	}
 	return &LKMLEmailStream{
 		cfg:          cfg,
 		ownEmails:    ownEmails,
@@ -50,6 +53,9 @@ const (
 )
 
 func (s *LKMLEmailStream) Loop(ctx context.Context, pollPeriod time.Duration) error {
+	defer log.Printf("lore archive polling aborted")
+	log.Printf("lore archive %s polling started", s.cfg.LoreArchiveURL)
+
 	last, err := s.client.LastReply(ctx, s.reporterName)
 	if err != nil {
 		return fmt.Errorf("failed to query the last reply: %w", err)

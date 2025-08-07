@@ -10,13 +10,15 @@ import (
 )
 
 type Series struct {
-	ID          string    `spanner:"ID"`
-	ExtID       string    `spanner:"ExtID"`
-	AuthorName  string    `spanner:"AuthorName"`
-	AuthorEmail string    `spanner:"AuthorEmail"`
-	Title       string    `spanner:"Title"`
-	Link        string    `spanner:"Link"`
-	Version     int64     `spanner:"Version"`
+	ID          string `spanner:"ID"`
+	ExtID       string `spanner:"ExtID"`
+	AuthorName  string `spanner:"AuthorName"`
+	AuthorEmail string `spanner:"AuthorEmail"`
+	Title       string `spanner:"Title"`
+	Link        string `spanner:"Link"`
+	Version     int64  `spanner:"Version"`
+	// In LKML patches, there are often hints at the target tree for the patch.
+	SubjectTags []string  `spanner:"SubjectTags"`
 	PublishedAt time.Time `spanner:"PublishedAt"`
 	// TODO: we could ger rid of the field by using slightly more complicated SQL queries.
 	LatestSessionID spanner.NullString `spanner:"LatestSessionID"`
@@ -39,13 +41,16 @@ type Patch struct {
 type Build struct {
 	ID         string             `spanner:"ID"`
 	TreeName   string             `spanner:"TreeName"`
+	TreeURL    string             `spanner:"TreeURL"`
 	CommitHash string             `spanner:"CommitHash"`
 	CommitDate time.Time          `spanner:"CommitDate"`
 	SeriesID   spanner.NullString `spanner:"SeriesID"`
 	Arch       string             `spanner:"Arch"`
 	ConfigName string             `spanner:"ConfigName"`
 	ConfigURI  string             `spanner:"ConfigURI"`
+	LogURI     string             `spanner:"LogURI"`
 	Status     string             `spanner:"Status"`
+	Compiler   string             `spanner:"Compiler"`
 }
 
 func (b *Build) SetSeriesID(val string) {

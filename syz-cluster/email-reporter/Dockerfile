@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS email-reporter-builder
+FROM golang:1.24-alpine AS email-reporter-builder
 
 WORKDIR /build
 
@@ -6,10 +6,9 @@ WORKDIR /build
 COPY go.mod ./
 COPY go.sum ./
 RUN go mod download
-COPY pkg/auth/ pkg/auth/
-COPY pkg/gcs/ pkg/gcs/
-COPY pkg/gce/ pkg/gce/
-COPY pkg/email/ pkg/email/
+COPY pkg/ pkg/
+COPY prog/ prog/
+COPY sys/targets/ sys/targets/
 COPY dashboard/dashapi/ dashboard/dashapi/
 
 # Build the tool.
@@ -19,6 +18,10 @@ RUN go build -o /bin/email-reporter /build/syz-cluster/email-reporter
 
 # Build the container.
 FROM alpine:latest
+
+RUN apk update && \
+    apk add git
+
 WORKDIR /app
 
 COPY --from=email-reporter-builder /bin/email-reporter /bin/email-reporter

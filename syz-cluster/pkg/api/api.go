@@ -5,20 +5,16 @@ package api
 
 import "time"
 
+// The output passed to other workflow steps.
 type TriageResult struct {
 	// If set, ignore the patch series completely.
-	Skip *SkipRequest `json:"skip"`
+	SkipReason string `json:"skip_reason"`
 	// Fuzzing configuration to try (NULL if nothing).
-	Fuzz *FuzzConfig `json:"fuzz"`
-}
-
-type SkipRequest struct {
-	Reason    string `json:"reason"`
-	TriageLog []byte `json:"log"`
+	Fuzz *FuzzTask `json:"fuzz"`
 }
 
 // The data layout faclitates the simplicity of the workflow definition.
-type FuzzConfig struct {
+type FuzzTask struct {
 	Base      BuildRequest `json:"base"`
 	Patched   BuildRequest `json:"patched"`
 	Config    string       `json:"config"` // Refers to workflow/configs/{}.
@@ -27,18 +23,23 @@ type FuzzConfig struct {
 
 // The triage step of the workflow will request these from controller.
 type Tree struct {
+	Name       string   `json:"name"` // Primary key.
+	URL        string   `json:"URL"`
+	Branch     string   `json:"branch"`
+	EmailLists []string `json:"email_lists"`
+}
+
+type FuzzConfig struct {
 	Name         string   `json:"name"` // Primary key.
-	URL          string   `json:"URL"`
-	Branch       string   `json:"branch"`
 	EmailLists   []string `json:"email_lists"`
-	Priority     int64    `json:"priority"` // Higher numbers mean higher priority.
 	KernelConfig string   `json:"kernel_config"`
-	FuzzConfig   string   `json:"fuzz_config"`
+	CorpusURL    string   `json:"corpus_url"`
 }
 
 type BuildRequest struct {
 	Arch       string `json:"arch"`
 	TreeName   string `json:"tree_name"`
+	TreeURL    string `json:"tree_url"`
 	CommitHash string `json:"commit_hash"`
 	ConfigName string `json:"config_name"` // These are known to both the triage and build steps.
 	SeriesID   string `json:"series_id"`
@@ -53,10 +54,12 @@ type BuildResult struct {
 type Build struct {
 	Arch         string    `json:"arch"`
 	TreeName     string    `json:"tree_name"`
+	TreeURL      string    `json:"tree_url"`
 	CommitHash   string    `json:"commit_hash"`
 	CommitDate   time.Time `json:"commit_date"`
 	ConfigName   string    `json:"config_name"`
 	SeriesID     string    `json:"series_id"`
+	Compiler     string    `json:"compiler"`
 	BuildSuccess bool      `json:"build_success"`
 }
 
@@ -100,6 +103,7 @@ type Series struct {
 	Cc          []string      `json:"cc"`
 	Version     int           `json:"version"`
 	Link        string        `json:"link"`
+	SubjectTags []string      `json:"subject_tags"`
 	PublishedAt time.Time     `json:"published_at"`
 	Patches     []SeriesPatch `json:"patches"`
 }
@@ -126,10 +130,7 @@ type NewSession struct {
 
 type SessionReport struct {
 	ID         string     `json:"id"`
-	Cc         []string   `json:"cc"`
 	Moderation bool       `json:"moderation"`
-	BaseRepo   string     `json:"base_repo"`
-	BaseCommit string     `json:"base_commit"`
 	Series     *Series    `json:"series"`
 	Findings   []*Finding `json:"findings"`
 	Link       string     `json:"link"` // URL to the web dashboard.
@@ -145,43 +146,91 @@ type Finding struct {
 }
 
 type BuildInfo struct {
+	TreeName   string `json:"tree_name"`
+	TreeURL    string `json:"tree_url"`
+	BaseCommit string `json:"base_commit"`
 	Arch       string `json:"arch"`
 	Compiler   string `json:"compiler"`
 	ConfigLink string `json:"config_link"`
 }
 
 // Let them stay here until we find a better place.
+// The list is ordered by decreasing importance.
 var DefaultTrees = []*Tree{
 	{
-		Name:         `torvalds`,
-		URL:          `https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux`,
-		Branch:       `master`,
-		Priority:     0,
-		EmailLists:   []string{},
-		KernelConfig: `upstream-apparmor-kasan.config`,
-		FuzzConfig:   `all`,
+		Name:       `bpf-next`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/bpf/bpf-next.git`,
+		Branch:     `master`,
+		EmailLists: []string{`bpf@vger.kernel.org`},
 	},
 	{
-		Name:         `netdev`,
-		URL:          `https://kernel.googlesource.com/pub/scm/linux/kernel/git/netdev/net.git`,
-		Branch:       `main`,
-		Priority:     1,
-		EmailLists:   []string{`netdev@vger.kernel.org`},
-		KernelConfig: `upstream-apparmor-kasan.config`,
-		FuzzConfig:   `net`,
+		Name:       `bpf`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/bpf/bpf.git`,
+		Branch:     `master`,
+		EmailLists: []string{`bpf@vger.kernel.org`},
+	},
+	{
+		Name:       `nf-next`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/netfilter/nf-next.git`,
+		Branch:     `main`,
+		EmailLists: []string{`netfilter-devel@vger.kernel.org`},
+	},
+	{
+		Name:       `nf`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/netfilter/nf.git`,
+		Branch:     `main`,
+		EmailLists: []string{`netfilter-devel@vger.kernel.org`},
+	},
+	{
+		Name:       `net-next`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/netdev/net-next.git`,
+		Branch:     `main`,
+		EmailLists: []string{`netdev@vger.kernel.org`},
+	},
+	{
+		Name:       `net`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/netdev/net.git`,
+		Branch:     `main`,
+		EmailLists: []string{`netdev@vger.kernel.org`},
+	},
+	{
+		Name:       `torvalds`,
+		URL:        `https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux`,
+		Branch:     `master`,
+		EmailLists: nil, // A fallback tree.
 	},
 }
 
-// TODO: find a better place for it.
-func (tree *Tree) CorpusURL() string {
-	if url, ok := fuzzToCorpus[tree.FuzzConfig]; ok {
-		return url
-	}
-	return corpusFallbackURL
-}
+const (
+	netCorpusURL = `https://storage.googleapis.com/syzkaller/corpus/ci-upstream-net-kasan-gce-corpus.db`
+	bpfCorpusURL = `https://storage.googleapis.com/syzkaller/corpus/ci-upstream-bpf-kasan-gce-corpus.db`
+	allCorpusURL = `https://storage.googleapis.com/syzkaller/corpus/ci-upstream-kasan-gce-root-corpus.db`
+)
 
-var fuzzToCorpus = map[string]string{
-	`net`: `https://storage.googleapis.com/syzkaller/corpus/ci-upstream-net-kasan-gce-corpus.db`,
+// The list is ordered by decreasing importance.
+var FuzzConfigs = []*FuzzConfig{
+	{
+		Name:         `kvm`,
+		EmailLists:   []string{`kvm@vger.kernel.org`},
+		KernelConfig: `upstream-apparmor-kasan.config`,
+		CorpusURL:    allCorpusURL,
+	},
+	{
+		Name:         `bpf`,
+		EmailLists:   []string{`bpf@vger.kernel.org`},
+		KernelConfig: `upstream-apparmor-kasan.config`,
+		CorpusURL:    bpfCorpusURL,
+	},
+	{
+		Name:         `net`,
+		EmailLists:   []string{`netdev@vger.kernel.org`, `netfilter-devel@vger.kernel.org`},
+		KernelConfig: `upstream-apparmor-kasan.config`,
+		CorpusURL:    netCorpusURL,
+	},
+	{
+		Name:         `all`,
+		EmailLists:   nil, // A fallback option.
+		KernelConfig: `upstream-apparmor-kasan.config`,
+		CorpusURL:    allCorpusURL,
+	},
 }
-
-const corpusFallbackURL = `https://storage.googleapis.com/syzkaller/corpus/ci-upstream-kasan-gce-root-corpus.db`

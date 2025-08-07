@@ -94,7 +94,12 @@ func run(baseCtx context.Context, client *api.Client, timeout time.Duration,
 	if err != nil {
 		return fmt.Errorf("failed to load configs: %w", err)
 	}
-	manager.PatchFocusAreas(patched, series.PatchBodies())
+
+	baseSymbols, patchedSymbols, err := readSymbolHashes()
+	if err != nil {
+		app.Errorf("failed to read symbol hashes: %v", err)
+	}
+	manager.PatchFocusAreas(patched, series.PatchBodies(), baseSymbols, patchedSymbols)
 
 	if *flagCorpusURL != "" {
 		err := downloadCorpus(baseCtx, patched.Workdir, *flagCorpusURL)
@@ -133,6 +138,8 @@ func run(baseCtx context.Context, client *api.Client, timeout time.Duration,
 			PatchedOnly:   bugs,
 			Store:         store,
 			MaxTriageTime: timeout / 2,
+			// Allow up to 30 minutes after the corpus triage to reach the patched code.
+			FuzzToReachPatched: time.Minute * 30,
 		})
 	})
 	const (
@@ -159,7 +166,12 @@ func run(baseCtx context.Context, client *api.Client, timeout time.Duration,
 			}
 		}
 	})
-	return eg.Wait()
+	err = eg.Wait()
+	if errors.Is(err, manager.ErrPatchedAreaNotReached) {
+		// We did not reach the modified parts of the kernel, but that's fine.
+		return nil
+	}
+	return err
 }
 
 func downloadCorpus(ctx context.Context, workdir, url string) error {
@@ -274,6 +286,35 @@ func reportFinding(ctx context.Context, client *api.Client, bug *manager.UniqueB
 		}
 	}
 	return client.UploadFinding(ctx, finding)
+}
+
+func readSymbolHashes() (base, patched map[string]string, err error) {
+	// These are saved by the build step.
+	base, err = readJSONMap("/base/symbol_hashes.json")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read base hashes: %w", err)
+	}
+	patched, err = readJSONMap("/patched/symbol_hashes.json")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read patched hashes: %w", err)
+	}
+	log.Logf(0, "extracted %d symbol hashes for base and %d for patched", len(base), len(patched))
+	return
+}
+
+func readJSONMap(file string) (map[string]string, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var data map[string]string
+	err = json.NewDecoder(f).Decode(&data)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func compressArtifacts(dir string) (io.Reader, error) {

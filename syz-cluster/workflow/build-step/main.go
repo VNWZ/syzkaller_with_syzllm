@@ -63,6 +63,7 @@ func main() {
 			Arch:       req.Arch,
 			ConfigName: req.ConfigName,
 			TreeName:   req.TreeName,
+			TreeURL:    req.TreeURL,
 			SeriesID:   req.SeriesID,
 		},
 	}
@@ -86,25 +87,28 @@ func main() {
 			return
 		}
 	}
-	var finding *api.NewFinding
+	ret := &BuildResult{}
 	if err != nil {
 		log.Printf("failed to checkout: %v", err)
 		uploadReq.Log = []byte(err.Error())
 	} else {
-		finding, err = buildKernel(tracer, req)
+		ret, err = buildKernel(tracer, req)
 		if err != nil {
 			log.Printf("build process failed: %v", err)
 			uploadReq.Log = []byte(err.Error())
-		} else if finding == nil {
-			uploadReq.BuildSuccess = true
 		} else {
-			log.Printf("%s", output.Bytes())
-			log.Printf("failed: %s\n%s", finding.Title, finding.Report)
-			uploadReq.Log = finding.Log
+			uploadReq.Compiler = ret.Compiler
+			uploadReq.Config = ret.Config
+			if ret.Finding == nil {
+				uploadReq.BuildSuccess = true
+			} else {
+				log.Printf("%s", output.Bytes())
+				log.Printf("failed: %s\n%s", ret.Finding.Title, ret.Finding.Report)
+				uploadReq.Log = ret.Finding.Log
+			}
 		}
 	}
-	reportResults(ctx, client, req.SeriesID != "",
-		uploadReq, finding, output.Bytes())
+	reportResults(ctx, client, req.SeriesID != "", uploadReq, ret.Finding, output.Bytes())
 }
 
 func reportResults(ctx context.Context, client *api.Client, patched bool,
@@ -197,7 +201,13 @@ func checkoutKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest, serie
 	return commit, err
 }
 
-func buildKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest) (*api.NewFinding, error) {
+type BuildResult struct {
+	Config   []byte
+	Compiler string
+	Finding  *api.NewFinding
+}
+
+func buildKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest) (*BuildResult, error) {
 	kernelConfig, err := os.ReadFile(filepath.Join("/kernel-configs", req.ConfigName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the kernel config: %w", err)
@@ -222,8 +232,13 @@ func buildKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest) (*api.Ne
 	info, err := build.Image(params)
 	tracer.Log("compiler: %q", info.CompilerID)
 	tracer.Log("signature: %q", info.Signature)
+	// We can fill this regardless of whether it succeeded.
+	ret := &BuildResult{
+		Compiler: info.CompilerID,
+	}
+	ret.Config, _ = os.ReadFile(filepath.Join(*flagOutput, "kernel.config"))
 	if err != nil {
-		finding := &api.NewFinding{
+		ret.Finding = &api.NewFinding{
 			SessionID: *flagSession,
 			TestName:  *flagTestName,
 			Title:     "kernel build error",
@@ -233,28 +248,51 @@ func buildKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest) (*api.Ne
 		switch {
 		case errors.As(err, &kernelError):
 			tracer.Log("kernel error: %q / %s", kernelError.Report, kernelError.Output)
-			finding.Report = kernelError.Report
-			finding.Log = kernelError.Output
-			return finding, nil
+			ret.Finding.Report = kernelError.Report
+			ret.Finding.Log = kernelError.Output
+			return ret, nil
 		case errors.As(err, &verboseError):
 			tracer.Log("verbose error: %q / %s", verboseError.Title, verboseError.Output)
-			finding.Report = []byte(verboseError.Title)
-			finding.Log = verboseError.Output
-			return finding, nil
+			ret.Finding.Report = []byte(verboseError.Title)
+			ret.Finding.Log = verboseError.Output
+			return ret, nil
 		default:
 			tracer.Log("other error: %v", err)
 		}
 		return nil, err
 	}
 	tracer.Log("build finished successfully")
-	// TODO: capture build logs and the compiler identity.
+
+	err = saveSymbolHashes(tracer)
+	if err != nil {
+		tracer.Log("failed to save symbol hashes: %s", err)
+	}
 	// Note: Output directory has the following structure:
 	//   |-- image
+	//   |-- symbol_hashes.json
 	//   |-- kernel
 	//   |-- kernel.config
 	//   `-- obj
 	//      `-- vmlinux
-	return nil, nil
+	return ret, nil
+}
+
+func saveSymbolHashes(tracer debugtracer.DebugTracer) error {
+	hashes, err := build.ElfSymbolHashes(filepath.Join(*flagRepository, "vmlinux.o"))
+	if err != nil {
+		return fmt.Errorf("failed to query symbol hashes: %w", err)
+	}
+	tracer.Log("extracted hashes for %d symbols", len(hashes))
+	file, err := os.Create(filepath.Join(*flagOutput, "symbol_hashes.json"))
+	if err != nil {
+		return fmt.Errorf("failed to open symbol_hashes.json: %w", err)
+	}
+	defer file.Close()
+	err = json.NewEncoder(file).Encode(hashes)
+	if err != nil {
+		return fmt.Errorf("failed to serialize: %w", err)
+	}
+	return nil
 }
 
 func ensureFlags(args ...string) {

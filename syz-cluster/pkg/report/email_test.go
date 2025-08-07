@@ -22,6 +22,7 @@ func TestRender(t *testing.T) {
 	config := &app.EmailConfig{
 		Name:         "syzbot",
 		DocsLink:     "http://docs/link",
+		CreditEmail:  "credit@email.com",
 		SupportEmail: "support@email.com",
 	}
 	flag.Parse()
@@ -63,7 +64,7 @@ func TestRender(t *testing.T) {
 					} else {
 						expected, err := os.ReadFile(outPath)
 						assert.NoError(t, err)
-						assert.Equal(t, expected, output)
+						assert.Equal(t, string(expected), string(output))
 					}
 				})
 			}
