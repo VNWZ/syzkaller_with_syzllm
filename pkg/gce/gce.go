@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/syzkaller/sys/targets"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
@@ -131,6 +132,7 @@ func (ctx *Context) CreateInstance(name, machineType, image, sshkey string,
 				AutoDelete: true,
 				Boot:       true,
 				Type:       "PERSISTENT",
+				DiskSizeGb: int64(diskSizeGB(machineType)),
 				InitializeParams: &compute.AttachedDiskInitializeParams{
 					DiskName:    name,
 					SourceImage: prefix + "/global/images/" + image,
@@ -210,6 +212,16 @@ retry:
 	return ip, nil
 }
 
+func diskSizeGB(machineType string) int {
+	if strings.HasPrefix(machineType, "c4a-") {
+		// For C4A machines, the only available disk type is "Hyperdisk Balanced",
+		// which must be >= 10GB.
+		return 10
+	}
+	// Use the default value.
+	return 0
+}
+
 func (ctx *Context) DeleteInstance(name string, wait bool) error {
 	var op *compute.Operation
 	err := ctx.apiCall(func() (err error) {
@@ -243,7 +255,15 @@ func (ctx *Context) IsInstanceRunning(name string) bool {
 	return inst.Status == "RUNNING"
 }
 
-func (ctx *Context) CreateImage(imageName, gcsFile string) error {
+func (ctx *Context) CreateImage(imageName, gcsFile, OS string) error {
+	var features []*compute.GuestOsFeature
+	if OS == targets.Linux {
+		features = []*compute.GuestOsFeature{
+			{
+				Type: "GVNIC",
+			},
+		}
+	}
 	image := &compute.Image{
 		Name: imageName,
 		RawDisk: &compute.ImageRawDisk{
@@ -252,6 +272,7 @@ func (ctx *Context) CreateImage(imageName, gcsFile string) error {
 		Licenses: []string{
 			"https://www.googleapis.com/compute/v1/projects/vm-options/global/licenses/enable-vmx",
 		},
+		GuestOsFeatures: features,
 	}
 	var op *compute.Operation
 	err := ctx.apiCall(func() (err error) {
