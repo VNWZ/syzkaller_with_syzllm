@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/google/syzkaller/pkg/syzllm_pkg"
 	"io"
 	"math/rand"
 	"net"
@@ -405,6 +406,13 @@ func (mgr *Manager) heartbeatLoop() {
 		for _, stat := range stat.Collect(stat.Console) {
 			fmt.Fprintf(buf, "%v=%v ", stat.Name, stat.Value)
 		}
+		// syzllm integration: send cov to server.optimizer
+		cov, err := syzllm_pkg.ExtractCoverage(buf.String())
+		if err != nil {
+			log.Logf(0, "failed to extract coverage: %v", err)
+		}
+		syzllm_pkg.SendCoverAsync(uint64(cov))
+
 		log.Logf(0, "%s", buf.String())
 	}
 }
