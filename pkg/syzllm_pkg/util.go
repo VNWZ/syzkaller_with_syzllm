@@ -73,3 +73,16 @@ func enlargeSlice(slice []string, pos int) ([]string, error) {
 	}
 	return append(slice[:pos], append([]string{""}, slice[pos:]...)...), nil
 }
+
+func StartSyzllmProbabilityDecay() {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			SyzllmProbabilityFuzzer *= 0.5
+			if SyzllmProbabilityFuzzer < 0.01 {
+				SyzllmProbabilityFuzzer = 0.01 // prevent it going to zero
+			}
+		}
+	}()
+}
