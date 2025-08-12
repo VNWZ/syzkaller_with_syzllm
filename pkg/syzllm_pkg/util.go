@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var SyzllmProbabilityFuzzer = 1.0
+var SyzllmProbabilityFuzzer = 0.9
 var MutationSelectionRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type SyscallRequestData struct {
@@ -76,7 +76,7 @@ func enlargeSlice(slice []string, pos int) ([]string, error) {
 
 func StartSyzllmProbabilityDecay() {
 	go func() {
-		ticker := time.NewTicker(time.Hour)
+		ticker := time.NewTicker(2 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
 			SyzllmProbabilityFuzzer *= 0.5
