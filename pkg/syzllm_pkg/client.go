@@ -70,7 +70,7 @@ func SendCoverAsync(cover uint64) {
 		serverInfo.Host = serverHostInDocker
 		serverInfo.Port = serverPortInDocker
 	}
-	url := fmt.Sprintf("http://%s:%s", serverInfo.Host, serverInfo.Port)
+	url := fmt.Sprintf("http://%s:%s/cover", serverInfo.Host, serverInfo.Port)
 
 	// Create HTTP client and request
 	client := getClient().client
