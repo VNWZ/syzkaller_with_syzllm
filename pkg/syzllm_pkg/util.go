@@ -79,7 +79,7 @@ func StartSyzllmProbabilityDecay() {
 		ticker := time.NewTicker(3 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			SyzllmProbabilityFuzzer *= 0.5
+			SyzllmProbabilityFuzzer *= 0.8
 			if SyzllmProbabilityFuzzer < 0.25 {
 				SyzllmProbabilityFuzzer = 0.25 // prevent it going to zero
 			}
