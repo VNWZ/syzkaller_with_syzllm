@@ -15,10 +15,17 @@ type TriageResult struct {
 
 // The data layout faclitates the simplicity of the workflow definition.
 type FuzzTask struct {
-	Base      BuildRequest `json:"base"`
-	Patched   BuildRequest `json:"patched"`
-	Config    string       `json:"config"` // Refers to workflow/configs/{}.
-	CorpusURL string       `json:"corpus_url"`
+	Base    BuildRequest `json:"base"`
+	Patched BuildRequest `json:"patched"`
+	FuzzConfig
+}
+
+// FuzzConfig represents a set of parameters passed to the fuzz step.
+type FuzzConfig struct {
+	Config    string `json:"config"` // Refers to workflow/configs/{}.
+	CorpusURL string `json:"corpus_url"`
+	// Don't expect kernel coverage for the patched area.
+	SkipCoverCheck bool `json:"skip_cover_check"`
 }
 
 // The triage step of the workflow will request these from controller.
@@ -29,11 +36,11 @@ type Tree struct {
 	EmailLists []string `json:"email_lists"`
 }
 
-type FuzzConfig struct {
-	Name         string   `json:"name"` // Primary key.
+// TriageFuzzConfig is a single record in the list of supported fuzz configs.
+type TriageFuzzConfig struct {
 	EmailLists   []string `json:"email_lists"`
 	KernelConfig string   `json:"kernel_config"`
-	CorpusURL    string   `json:"corpus_url"`
+	FuzzConfig
 }
 
 type BuildRequest struct {
@@ -208,39 +215,59 @@ const (
 )
 
 // The list is ordered by decreasing importance.
-var FuzzConfigs = []*FuzzConfig{
+var FuzzConfigs = []*TriageFuzzConfig{
 	{
-		Name:         `kvm`,
 		EmailLists:   []string{`kvm@vger.kernel.org`},
 		KernelConfig: `upstream-apparmor-kasan.config`,
-		CorpusURL:    allCorpusURL,
+		FuzzConfig: FuzzConfig{
+			Config:    `kvm`,
+			CorpusURL: allCorpusURL,
+		},
 	},
 	{
-		Name:         `io-uring`,
 		EmailLists:   []string{`io-uring@vger.kernel.org`},
 		KernelConfig: `upstream-apparmor-kasan.config`,
-		CorpusURL:    allCorpusURL,
+		FuzzConfig: FuzzConfig{
+			Config:    `io-uring`,
+			CorpusURL: allCorpusURL,
+		},
 	},
 	{
-		Name:         `bpf`,
 		EmailLists:   []string{`bpf@vger.kernel.org`},
 		KernelConfig: `upstream-apparmor-kasan.config`,
-		CorpusURL:    bpfCorpusURL,
+		FuzzConfig: FuzzConfig{
+			Config:    `bpf`,
+			CorpusURL: bpfCorpusURL,
+		},
 	},
 	{
-		Name: `net`,
 		EmailLists: []string{
 			`netdev@vger.kernel.org`,
 			`netfilter-devel@vger.kernel.org`,
 			`linux-wireless@vger.kernel.org`,
 		},
 		KernelConfig: `upstream-apparmor-kasan.config`,
-		CorpusURL:    netCorpusURL,
+		FuzzConfig: FuzzConfig{
+			Config:    `net`,
+			CorpusURL: netCorpusURL,
+		},
 	},
 	{
-		Name:         `all`,
+		EmailLists:   []string{`linux-mm@kvack.org`},
+		KernelConfig: `upstream-apparmor-kasan.config`,
+		FuzzConfig: FuzzConfig{
+			Config:    `all`,
+			CorpusURL: allCorpusURL,
+			// Not all mm/ code is instrumented with KCOV.
+			SkipCoverCheck: true,
+		},
+	},
+	{
 		EmailLists:   nil, // A fallback option.
 		KernelConfig: `upstream-apparmor-kasan.config`,
-		CorpusURL:    allCorpusURL,
+		FuzzConfig: FuzzConfig{
+			Config:    `all`,
+			CorpusURL: allCorpusURL,
+		},
 	},
 }
