@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/google/syzkaller/pkg/syzllm_pkg"
 	"io"
 	"math/rand"
 	"net"
@@ -405,6 +406,13 @@ func (mgr *Manager) heartbeatLoop() {
 		for _, stat := range stat.Collect(stat.Console) {
 			fmt.Fprintf(buf, "%v=%v ", stat.Name, stat.Value)
 		}
+		// syzllm integration: send cov to server.optimizer
+		cov, err := syzllm_pkg.ExtractCoverage(buf.String())
+		if err != nil {
+			log.Logf(0, "failed to extract coverage: %v", err)
+		}
+		syzllm_pkg.SendCoverAsync(uint64(cov))
+
 		log.Logf(0, "%s", buf.String())
 	}
 }
@@ -601,12 +609,15 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 	injectExec := make(chan bool, 10)
 	serv.CreateInstance(inst.Index(), injectExec, updInfo)
 
-	rep, vmInfo, err := mgr.runInstanceInner(ctx, inst, injectExec, vm.EarlyFinishCb(func() {
-		// Depending on the crash type and kernel config, fuzzing may continue
-		// running for several seconds even after kernel has printed a crash report.
-		// This litters the log and we want to prevent it.
-		serv.StopFuzzing(inst.Index())
-	}))
+	rep, vmInfo, err := mgr.runInstanceInner(ctx, inst,
+		vm.WithExitCondition(vm.ExitTimeout),
+		vm.WithInjectExecuting(injectExec),
+		vm.WithEarlyFinishCb(func() {
+			// Depending on the crash type and kernel config, fuzzing may continue
+			// running for several seconds even after kernel has printed a crash report.
+			// This litters the log, and we want to prevent it.
+			serv.StopFuzzing(inst.Index())
+		}))
 	var extraExecs []report.ExecutorInfo
 	if rep != nil && rep.Executor != nil {
 		extraExecs = []report.ExecutorInfo{*rep.Executor}
@@ -630,8 +641,8 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 	}
 }
 
-func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, injectExec <-chan bool,
-	finishCb vm.EarlyFinishCb) (*report.Report, []byte, error) {
+func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opts ...func(*vm.RunOptions),
+) (*report.Report, []byte, error) {
 	fwdAddr, err := inst.Forward(mgr.serv.Port())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to setup port forwarding: %w", err)
@@ -657,10 +668,7 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, inj
 	cmd := fmt.Sprintf("%v runner %v %v %v", executorBin, inst.Index(), host, port)
 	ctxTimeout, cancel := context.WithTimeout(ctx, mgr.cfg.Timeouts.VMRunningTime)
 	defer cancel()
-	_, rep, err := inst.Run(ctxTimeout, mgr.reporter, cmd,
-		vm.ExitTimeout, vm.InjectExecuting(injectExec),
-		finishCb,
-	)
+	_, rep, err := inst.Run(ctxTimeout, mgr.reporter, cmd, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to run fuzzer: %w", err)
 	}

@@ -78,20 +78,20 @@ func main() {
 		uploadReq.CommitHash = commit.Hash
 		uploadReq.CommitDate = commit.CommitDate
 	}
-	if *flagSmokeBuild {
-		skip, err := alreadyBuilt(ctx, client, uploadReq)
-		if err != nil {
-			app.Fatalf("failed to query known builds: %v", err)
-		} else if skip {
-			log.Printf("%s already built, skipping", uploadReq.CommitHash)
-			return
-		}
-	}
 	ret := &BuildResult{}
 	if err != nil {
 		log.Printf("failed to checkout: %v", err)
 		uploadReq.Log = []byte(err.Error())
 	} else {
+		if *flagSmokeBuild {
+			skip, err := alreadyBuilt(ctx, client, uploadReq)
+			if err != nil {
+				app.Fatalf("failed to query known builds: %v", err)
+			} else if skip {
+				log.Printf("%s already built, skipping", uploadReq.CommitHash)
+				return
+			}
+		}
 		ret, err = buildKernel(tracer, req)
 		if err != nil {
 			log.Printf("build process failed: %v", err)
@@ -186,7 +186,7 @@ func checkoutKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest, serie
 	if err != nil {
 		return nil, err
 	}
-	commit, err := ops.Commit(req.CommitHash)
+	commit, err := ops.Commit(req.TreeName, req.CommitHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit info: %w", err)
 	}
@@ -197,7 +197,7 @@ func checkoutKernel(tracer debugtracer.DebugTracer, req *api.BuildRequest, serie
 	if len(patches) > 0 {
 		tracer.Log("applying %d patches", len(patches))
 	}
-	err = ops.ApplySeries(req.CommitHash, patches)
+	err = ops.ApplySeries(commit.Hash, patches)
 	return commit, err
 }
 

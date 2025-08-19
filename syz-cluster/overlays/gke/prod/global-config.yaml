@@ -8,13 +8,16 @@ metadata:
 data:
   config.yaml: |
     URL: https://ci.syzbot.org
-    parallelWorkflows: 7
+    parallelWorkflows: 10
     loreArchives:
       - netdev
       - bpf
       - linux-ext4
       - netfilter-devel
       - kvm
+      - io-uring
+      - linux-wireless
+      - linux-mm
     emailReporting:
       name: "syzbot ci"
       sender: dashapi

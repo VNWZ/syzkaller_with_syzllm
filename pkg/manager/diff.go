@@ -323,23 +323,23 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 // TODO: instead of this limit, consider expotentially growing delays between reproduction attempts.
 const maxReproAttempts = 6
 
-func skipDiffRepro(title string) bool {
+func needReproForTitle(title string) bool {
 	if strings.Contains(title, "no output") ||
 		strings.Contains(title, "lost connection") ||
 		strings.Contains(title, "detected stall") ||
 		strings.Contains(title, "SYZ") {
 		// Don't waste time reproducing these.
-		return true
+		return false
 	}
-	return false
+	return true
 }
 
 func (dc *diffContext) NeedRepro(crash *Crash) bool {
 	if crash.FullRepro {
 		return true
 	}
-	if skipDiffRepro(crash.Title) {
-		return true
+	if !needReproForTitle(crash.Title) {
+		return false
 	}
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
@@ -463,6 +463,23 @@ func (kc *kernelContext) Loop(baseCtx context.Context) error {
 	eg.Go(func() error {
 		kc.pool.Loop(ctx)
 		return nil
+	})
+	eg.Go(func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case err := <-kc.pool.BootErrors:
+				title := "unknown"
+				var bootErr vm.BootErrorer
+				if errors.As(err, &bootErr) {
+					title, _ = bootErr.BootError()
+				}
+				// Boot errors are not useful for patch fuzzing (at least yet).
+				// Fetch them to not block the channel and print them to the logs.
+				log.Logf(0, "%s: boot error: %s", kc.name, title)
+			}
+		}
 	})
 	return eg.Wait()
 }
@@ -619,9 +636,10 @@ func (kc *kernelContext) runInstance(ctx context.Context, inst *vm.Instance,
 	cmd := fmt.Sprintf("%v runner %v %v %v", executorBin, inst.Index(), host, port)
 	ctxTimeout, cancel := context.WithTimeout(ctx, kc.cfg.Timeouts.VMRunningTime)
 	defer cancel()
-	_, rep, err := inst.Run(ctxTimeout, kc.reporter, cmd, vm.ExitTimeout,
-		vm.InjectExecuting(injectExec),
-		vm.EarlyFinishCb(func() {
+	_, rep, err := inst.Run(ctxTimeout, kc.reporter, cmd,
+		vm.WithExitCondition(vm.ExitTimeout),
+		vm.WithInjectExecuting(injectExec),
+		vm.WithEarlyFinishCb(func() {
 			// Depending on the crash type and kernel config, fuzzing may continue
 			// running for several seconds even after kernel has printed a crash report.
 			// This litters the log and we want to prevent it.
@@ -816,25 +834,21 @@ func affectedFiles(cfg *mgrconfig.Config, gitPatches [][]byte) (direct, transiti
 	for _, file := range allFiles {
 		directMap[file] = struct{}{}
 		if strings.HasSuffix(file, ".h") && cfg.KernelSrc != "" {
+			// For .h files, we want to determine all the .c files that include them.
 			// Ideally, we should combine this with the recompilation process - then we know
 			// exactly which files were affected by the patch.
-			out, err := osutil.RunCmd(time.Minute, cfg.KernelSrc, "/usr/bin/grep",
-				"-rl", "--include", `*.c`, `<`+strings.TrimPrefix(file, "include/")+`>`)
+			matching, err := osutil.GrepFiles(cfg.KernelSrc, `.c`,
+				[]byte(`<`+strings.TrimPrefix(file, "include/")+`>`))
 			if err != nil {
-				log.Logf(0, "failed to grep for the header usages: %v", err)
+				log.Logf(0, "failed to grep for includes: %s", err)
 				continue
 			}
-			lines := strings.Split(string(out), "\n")
-			if len(lines) >= maxAffectedByHeader {
+			if len(matching) >= maxAffectedByHeader {
 				// It's too widespread. It won't help us focus on anything.
-				log.Logf(0, "the header %q is included in too many files (%d)", file, len(lines))
+				log.Logf(0, "the header %q is included in too many files (%d)", file, len(matching))
 				continue
 			}
-			for _, name := range lines {
-				name = strings.TrimSpace(name)
-				if name == "" {
-					continue
-				}
+			for _, name := range matching {
 				transitiveMap[name] = struct{}{}
 			}
 		}
