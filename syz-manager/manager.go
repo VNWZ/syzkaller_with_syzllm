@@ -242,6 +242,10 @@ func main() {
 		cfg.DashboardClient = ""
 		cfg.HubClient = ""
 	}
+
+	// syzllm integration
+	syzllm_pkg.StartSyzllmProbabilityDecay()
+
 	RunManager(mode, cfg)
 }
 

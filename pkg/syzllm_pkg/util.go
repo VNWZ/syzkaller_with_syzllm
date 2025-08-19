@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var SyzllmProbabilityFuzzer = 1.0
+var SyzllmProbabilityFuzzer = 0.9
 var MutationSelectionRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type SyscallRequestData struct {
@@ -72,4 +72,17 @@ func enlargeSlice(slice []string, pos int) ([]string, error) {
 		return nil, fmt.Errorf("invalid position %d", pos)
 	}
 	return append(slice[:pos], append([]string{""}, slice[pos:]...)...), nil
+}
+
+func StartSyzllmProbabilityDecay() {
+	go func() {
+		ticker := time.NewTicker(3 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			SyzllmProbabilityFuzzer *= 0.8
+			if SyzllmProbabilityFuzzer < 0.25 {
+				SyzllmProbabilityFuzzer = 0.25 // prevent it going to zero
+			}
+		}
+	}()
 }
