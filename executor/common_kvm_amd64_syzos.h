@@ -3,20 +3,10 @@
 
 // This file provides guest code running inside the AMD64 KVM.
 
+#include "common_kvm_syzos.h"
 #include "kvm.h"
 #include <linux/kvm.h>
 #include <stdbool.h>
-
-// Host will map the code in this section into the guest address space.
-#define GUEST_CODE __attribute__((section("guest")))
-
-// Prevent function inlining. This attribute is applied to every guest_handle_* function,
-// making sure they remain small so that the compiler does not attempt to be too clever
-// (e.g. generate switch tables).
-#define noinline __attribute__((noinline))
-
-// Start/end of the guest section.
-extern char *__start_guest, *__stop_guest;
 
 // Compilers will eagerly try to transform the switch statement in guest_main()
 // into a jump table, unless the cases are sparse enough.
@@ -29,6 +19,9 @@ typedef enum {
 	SYZOS_API_WRMSR = 30,
 	SYZOS_API_RDMSR = 50,
 	SYZOS_API_WR_CRN = 70,
+	SYZOS_API_WR_DRN = 110,
+	SYZOS_API_IN_DX = 130,
+	SYZOS_API_OUT_DX = 170,
 	SYZOS_API_STOP, // Must be the last one
 } syzos_api_id;
 
@@ -63,12 +56,20 @@ struct api_call_2 {
 	uint64 args[2];
 };
 
+struct api_call_3 {
+	struct api_call_header header;
+	uint64 args[3];
+};
+
 static void guest_uexit(uint64 exit_code);
 static void guest_execute_code(uint8* insns, uint64 size);
 static void guest_handle_cpuid(uint32 eax, uint32 ecx);
 static void guest_handle_wrmsr(uint64 reg, uint64 val);
 static void guest_handle_rdmsr(uint64 reg);
 static void guest_handle_wr_crn(struct api_call_2* cmd);
+static void guest_handle_wr_drn(struct api_call_2* cmd);
+static void guest_handle_in_dx(struct api_call_2* cmd);
+static void guest_handle_out_dx(struct api_call_3* cmd);
 
 typedef enum {
 	UEXIT_END = (uint64)-1,
@@ -118,6 +119,18 @@ guest_main(uint64 size, uint64 cpu)
 		}
 		case SYZOS_API_WR_CRN: {
 			guest_handle_wr_crn((struct api_call_2*)cmd);
+			break;
+		}
+		case SYZOS_API_WR_DRN: {
+			guest_handle_wr_drn((struct api_call_2*)cmd);
+			break;
+		}
+		case SYZOS_API_IN_DX: {
+			guest_handle_in_dx((struct api_call_2*)cmd);
+			break;
+		}
+		case SYZOS_API_OUT_DX: {
+			guest_handle_out_dx((struct api_call_3*)cmd);
 			break;
 		}
 		}
@@ -185,29 +198,120 @@ GUEST_CODE static noinline void guest_handle_rdmsr(uint64 reg)
 GUEST_CODE static noinline void guest_handle_wr_crn(struct api_call_2* cmd)
 {
 	uint64 value = cmd->args[1];
-	switch (cmd->args[0]) {
-	case 0:
+	// Prevent the compiler from generating a switch table.
+	volatile uint64 reg = cmd->args[0];
+	if (reg == 0) {
 		// Move value to CR0.
 		asm volatile("movq %0, %%cr0" ::"r"(value) : "memory");
-		break;
-	case 2:
+		return;
+	}
+	if (reg == 2) {
 		// Move value to CR2.
 		asm volatile("movq %0, %%cr2" ::"r"(value) : "memory");
-		break;
-	case 3:
+		return;
+	}
+	if (reg == 3) {
 		// Move value to CR3.
 		asm volatile("movq %0, %%cr3" ::"r"(value) : "memory");
-		break;
-	case 4:
+		return;
+	}
+	if (reg == 4) {
 		// Move value to CR4.
 		asm volatile("movq %0, %%cr4" ::"r"(value) : "memory");
-		break;
-	case 8:
+		return;
+	}
+	if (reg == 8) {
 		// Move value to CR8 (TPR - Task Priority Register).
 		asm volatile("movq %0, %%cr8" ::"r"(value) : "memory");
-		break;
-	default:
-		// Do nothing.
-		break;
+		return;
+	}
+}
+
+// Write to DRn debug register.
+GUEST_CODE static noinline void guest_handle_wr_drn(struct api_call_2* cmd)
+{
+	uint64 value = cmd->args[1];
+	volatile uint64 reg = cmd->args[0];
+	if (reg == 0) {
+		asm volatile("movq %0, %%dr0" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 1) {
+		asm volatile("movq %0, %%dr1" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 2) {
+		asm volatile("movq %0, %%dr2" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 3) {
+		asm volatile("movq %0, %%dr3" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 4) {
+		asm volatile("movq %0, %%dr4" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 5) {
+		asm volatile("movq %0, %%dr5" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 6) {
+		asm volatile("movq %0, %%dr6" ::"r"(value) : "memory");
+		return;
+	}
+	if (reg == 7) {
+		asm volatile("movq %0, %%dr7" ::"r"(value) : "memory");
+		return;
+	}
+}
+
+// Read data from an I/O port, should result in KVM_EXIT_IO.
+GUEST_CODE static noinline void guest_handle_in_dx(struct api_call_2* cmd)
+{
+	uint16 port = cmd->args[0];
+	volatile int size = cmd->args[1];
+
+	if (size == 1) {
+		uint8 unused;
+		// Reads 1 byte from the port in DX into AL.
+		asm volatile("inb %1, %0" : "=a"(unused) : "d"(port));
+		return;
+	}
+	if (size == 2) {
+		uint16 unused;
+		// Reads 2 bytes from the port in DX into AX.
+		asm volatile("inw %1, %0" : "=a"(unused) : "d"(port));
+		return;
+	}
+	if (size == 4) {
+		uint32 unused;
+		// Reads 4 bytes from the port in DX into EAX.
+		asm volatile("inl %1, %0" : "=a"(unused) : "d"(port));
+	}
+	return;
+}
+
+// Write data to an I/O port, should result in KVM_EXIT_IO.
+GUEST_CODE static noinline void guest_handle_out_dx(struct api_call_3* cmd)
+{
+	uint16 port = cmd->args[0];
+	volatile int size = cmd->args[1];
+	uint32 data = (uint32)cmd->args[2];
+
+	if (size == 1) {
+		// Writes 1 byte from AL to the port in DX.
+		asm volatile("outb %b0, %w1" ::"a"(data), "d"(port));
+		return;
+	}
+	if (size == 2) {
+		// Writes 2 bytes from AX to the port in DX.
+		asm volatile("outw %w0, %w1" ::"a"(data), "d"(port));
+		return;
+	}
+	if (size == 4) {
+		// Writes 4 bytes from EAX to the port in DX.
+		asm volatile("outl %k0, %w1" ::"a"(data), "d"(port));
+		return;
 	}
 }
