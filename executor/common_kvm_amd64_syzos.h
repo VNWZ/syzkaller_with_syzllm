@@ -22,6 +22,7 @@ typedef enum {
 	SYZOS_API_WR_DRN = 110,
 	SYZOS_API_IN_DX = 130,
 	SYZOS_API_OUT_DX = 170,
+	SYZOS_API_SET_IRQ_HANDLER = 190,
 	SYZOS_API_STOP, // Must be the last one
 } syzos_api_id;
 
@@ -61,15 +62,22 @@ struct api_call_3 {
 	uint64 args[3];
 };
 
-static void guest_uexit(uint64 exit_code);
-static void guest_execute_code(uint8* insns, uint64 size);
-static void guest_handle_cpuid(uint32 eax, uint32 ecx);
-static void guest_handle_wrmsr(uint64 reg, uint64 val);
-static void guest_handle_rdmsr(uint64 reg);
-static void guest_handle_wr_crn(struct api_call_2* cmd);
-static void guest_handle_wr_drn(struct api_call_2* cmd);
-static void guest_handle_in_dx(struct api_call_2* cmd);
-static void guest_handle_out_dx(struct api_call_3* cmd);
+#ifdef __cplusplus
+extern "C" {
+#endif
+GUEST_CODE static void guest_uexit(uint64 exit_code);
+#ifdef __cplusplus
+}
+#endif
+GUEST_CODE static void guest_execute_code(uint8* insns, uint64 size);
+GUEST_CODE static void guest_handle_cpuid(uint32 eax, uint32 ecx);
+GUEST_CODE static void guest_handle_wrmsr(uint64 reg, uint64 val);
+GUEST_CODE static void guest_handle_rdmsr(uint64 reg);
+GUEST_CODE static void guest_handle_wr_crn(struct api_call_2* cmd);
+GUEST_CODE static void guest_handle_wr_drn(struct api_call_2* cmd);
+GUEST_CODE static void guest_handle_in_dx(struct api_call_2* cmd);
+GUEST_CODE static void guest_handle_out_dx(struct api_call_3* cmd);
+GUEST_CODE static void guest_handle_set_irq_handler(struct api_call_2* cmd);
 
 typedef enum {
 	UEXIT_END = (uint64)-1,
@@ -77,13 +85,45 @@ typedef enum {
 	UEXIT_ASSERT = (uint64)-3,
 } uexit_code;
 
+__attribute__((naked))
+GUEST_CODE static void
+dummy_null_handler()
+{
+	asm("iretq");
+}
+
+__attribute__((naked)) GUEST_CODE static void uexit_irq_handler()
+{
+	asm volatile(R"(
+	    // Call guest_uexit(UEXIT_IRQ).
+	    movq $-2, %rdi
+	    call guest_uexit
+
+	    iretq
+	)");
+}
+
 // Main guest function that performs necessary setup and passes the control to the user-provided
 // payload.
+// The inner loop uses a complex if-statement, because Clang is eager to insert a jump table into
+// a switch statement.
+
+// TODO(glider): executor/style_test.go insists that single-line compound statements should not
+// be used e.g. in the following case:
+//   if (call == SYZOS_API_UEXIT) {
+//     struct api_call_uexit* ucmd = (struct api_call_uexit*)cmd;
+//     guest_uexit(ucmd->exit_code);
+//   } else if (call == SYZOS_API_WR_CRN) {
+//     guest_handle_wr_crn((struct api_call_2*)cmd);  // Style check fails here
+//   }
+// , i.e. when the braces are consistent with the rest of the code, even despite this violates the
+// Google C++ style guide.
+// We add single-line comments to justify having the compound statements below.
 __attribute__((used))
 GUEST_CODE static void
 guest_main(uint64 size, uint64 cpu)
 {
-	uint64 addr = X86_ADDR_USER_CODE + cpu * KVM_PAGE_SIZE;
+	uint64 addr = X86_SYZOS_ADDR_USER_CODE + cpu * KVM_PAGE_SIZE;
 
 	while (size >= sizeof(struct api_call_header)) {
 		struct api_call_header* cmd = (struct api_call_header*)addr;
@@ -91,48 +131,42 @@ guest_main(uint64 size, uint64 cpu)
 			return;
 		if (cmd->size > size)
 			return;
-		switch (cmd->call) {
-		case SYZOS_API_UEXIT: {
+		volatile uint64 call = cmd->call;
+		if (call == SYZOS_API_UEXIT) {
+			// Issue a user exit.
 			struct api_call_uexit* ucmd = (struct api_call_uexit*)cmd;
 			guest_uexit(ucmd->exit_code);
-			break;
-		}
-		case SYZOS_API_CODE: {
+		} else if (call == SYZOS_API_CODE) {
+			// Execute an instruction blob.
 			struct api_call_code* ccmd = (struct api_call_code*)cmd;
 			guest_execute_code(ccmd->insns, cmd->size - sizeof(struct api_call_header));
-			break;
-		}
-		case SYZOS_API_CPUID: {
+		} else if (call == SYZOS_API_CPUID) {
+			// Issue CPUID.
 			struct api_call_cpuid* ccmd = (struct api_call_cpuid*)cmd;
 			guest_handle_cpuid(ccmd->eax, ccmd->ecx);
-			break;
-		}
-		case SYZOS_API_WRMSR: {
+		} else if (call == SYZOS_API_WRMSR) {
+			// Write an MSR register.
 			struct api_call_2* ccmd = (struct api_call_2*)cmd;
 			guest_handle_wrmsr(ccmd->args[0], ccmd->args[1]);
-			break;
-		}
-		case SYZOS_API_RDMSR: {
+		} else if (call == SYZOS_API_RDMSR) {
+			// Read an MSR register.
 			struct api_call_1* ccmd = (struct api_call_1*)cmd;
 			guest_handle_rdmsr(ccmd->arg);
-			break;
-		}
-		case SYZOS_API_WR_CRN: {
+		} else if (call == SYZOS_API_WR_CRN) {
+			// Write value to a control register.
 			guest_handle_wr_crn((struct api_call_2*)cmd);
-			break;
-		}
-		case SYZOS_API_WR_DRN: {
+		} else if (call == SYZOS_API_WR_DRN) {
+			// Write value to a debug register.
 			guest_handle_wr_drn((struct api_call_2*)cmd);
-			break;
-		}
-		case SYZOS_API_IN_DX: {
+		} else if (call == SYZOS_API_IN_DX) {
+			// Read data from an I/O port.
 			guest_handle_in_dx((struct api_call_2*)cmd);
-			break;
-		}
-		case SYZOS_API_OUT_DX: {
+		} else if (call == SYZOS_API_OUT_DX) {
+			// Write data to an I/O port.
 			guest_handle_out_dx((struct api_call_3*)cmd);
-			break;
-		}
+		} else if (call == SYZOS_API_SET_IRQ_HANDLER) {
+			// Set the handler for a particular IRQ.
+			guest_handle_set_irq_handler((struct api_call_2*)cmd);
 		}
 		addr += cmd->size;
 		size -= cmd->size;
@@ -149,9 +183,14 @@ GUEST_CODE static noinline void guest_execute_code(uint8* insns, uint64 size)
 // Perform a userspace exit that can be handled by the host.
 // The host returns from ioctl(KVM_RUN) with kvm_run.exit_reason=KVM_EXIT_MMIO,
 // and can handle the call depending on the data passed as exit code.
-GUEST_CODE static noinline void guest_uexit(uint64 exit_code)
+
+// Make sure the compiler does not optimize this function away, it is called from
+// assembly.
+__attribute__((used))
+GUEST_CODE static noinline void
+guest_uexit(uint64 exit_code)
 {
-	volatile uint64* ptr = (volatile uint64*)X86_ADDR_UEXIT;
+	volatile uint64* ptr = (volatile uint64*)X86_SYZOS_ADDR_UEXIT;
 	*ptr = exit_code;
 }
 
@@ -314,4 +353,44 @@ GUEST_CODE static noinline void guest_handle_out_dx(struct api_call_3* cmd)
 		asm volatile("outl %k0, %w1" ::"a"(data), "d"(port));
 		return;
 	}
+}
+
+// See https://wiki.osdev.org/Interrupt_Descriptor_Table#Gate_Descriptor_2.
+struct idt_entry_64 {
+	uint16 offset_low;
+	uint16 selector;
+	// Interrupt Stack Table offset in bits 0..2
+	uint8 ist;
+	// Gate Type, P and DPL.
+	uint8 type_attr;
+	uint16 offset_mid;
+	uint32 offset_high;
+	uint32 reserved;
+} __attribute__((packed));
+
+// IDT gate setup should be similar to syzos_setup_idt() in the host code.
+GUEST_CODE static void set_idt_gate(uint8 vector, uint64 handler)
+{
+	volatile struct idt_entry_64* idt =
+	    (volatile struct idt_entry_64*)(X86_SYZOS_ADDR_VAR_IDT);
+	volatile struct idt_entry_64* idt_entry = &idt[vector];
+	idt_entry->offset_low = (uint16)handler;
+	idt_entry->offset_mid = (uint16)(handler >> 16);
+	idt_entry->offset_high = (uint32)(handler >> 32);
+	idt_entry->selector = X86_SYZOS_SEL_CODE;
+	idt_entry->type_attr = 0x8E;
+	idt_entry->ist = 0;
+	idt_entry->reserved = 0;
+}
+
+GUEST_CODE static noinline void guest_handle_set_irq_handler(struct api_call_2* cmd)
+{
+	uint8 vector = (uint8)cmd->args[0];
+	uint64 type = cmd->args[1];
+	volatile uint64 handler_addr = 0;
+	if (type == 1)
+		handler_addr = executor_fn_guest_addr(dummy_null_handler);
+	else if (type == 2)
+		handler_addr = executor_fn_guest_addr(uexit_irq_handler);
+	set_idt_gate(vector, handler_addr);
 }
