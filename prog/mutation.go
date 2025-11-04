@@ -195,8 +195,8 @@ var (
 )
 
 func init() {
-	syzllmChan = make(chan time.Duration, 1000)    // Buffered channel to minimize blocking
-	syzkallerChan = make(chan time.Duration, 1000) // Adjust buffer size as needed
+	syzllmChan = make(chan time.Duration, 6000)    // Buffered channel to minimize blocking
+	syzkallerChan = make(chan time.Duration, 9000) // Adjust buffer size as needed
 	go collector()
 }
 
