@@ -6,10 +6,13 @@ package prog
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/google/syzkaller/pkg/syzllm_pkg"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
+	"time"
+
+	"github.com/google/syzkaller/pkg/syzllm_pkg"
 
 	"github.com/google/syzkaller/pkg/image"
 )
@@ -181,6 +184,56 @@ func (ctx *mutator) squashAny() bool {
 	return true
 }
 
+// syzllm start
+var (
+	syzllmChan         chan time.Duration
+	syzkallerChan      chan time.Duration
+	syzllmBatchSize    = 2000 // run avg 30 progs/s, 54000 p/30min * 0.3 = 16200,
+	syzkallerBatchSize = 6000
+	syzllmFile         = "syzllm_times.txt"
+	generateFile       = "generate_times.txt"
+)
+
+func init() {
+	syzllmChan = make(chan time.Duration, 1000)    // Buffered channel to minimize blocking
+	syzkallerChan = make(chan time.Duration, 1000) // Adjust buffer size as needed
+	go collector()
+}
+
+func collector() {
+	var syzllmDurations []time.Duration
+	var generateDurations []time.Duration
+	for {
+		select {
+		case d := <-syzllmChan:
+			syzllmDurations = append(syzllmDurations, d)
+			if len(syzllmDurations) >= syzllmBatchSize {
+				writeToFile(syzllmFile, syzllmDurations)
+				syzllmDurations = nil
+			}
+		case d := <-syzkallerChan:
+			generateDurations = append(generateDurations, d)
+			if len(generateDurations) >= syzkallerBatchSize {
+				writeToFile(generateFile, generateDurations)
+				generateDurations = nil
+			}
+		}
+	}
+}
+
+func writeToFile(filename string, durs []time.Duration) {
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return // Or handle error appropriately
+	}
+	defer f.Close()
+	for _, d := range durs {
+		fmt.Fprintf(f, "%v\n", d)
+	}
+}
+
+// sysllm end
+
 // Inserts a new call at a randomly chosen point (with bias towards the end of
 // existing program). Does not insert a call if program already has ncalls.
 func (ctx *mutator) insertCall() bool {
@@ -197,17 +250,25 @@ func (ctx *mutator) insertCall() bool {
 	// syzllm start
 	// todo: reduce syzllm prob over time
 	if len(p.Calls) >= 6 && syzllm_pkg.MutationSelectionRand.Float64() < syzllm_pkg.SyzllmProbabilityFuzzer {
+		start := time.Now()
 		p = newSyzllm(p, idx, ctx.ct).insert()
+		duration := time.Since(start)
+		syzllmChan <- duration
 		return true
 	}
 	// syzllm end
 
+	// syzllm start
+	start := time.Now()
 	s := analyze(ctx.ct, ctx.corpus, p, c)
 	calls := r.generateCall(s, p, idx)
 	p.insertBefore(c, calls)
 	for len(p.Calls) > ctx.ncalls {
 		p.RemoveCall(idx)
 	}
+	duration := time.Since(start)
+	syzkallerChan <- duration
+	// syzllm end
 	return true
 }
 
