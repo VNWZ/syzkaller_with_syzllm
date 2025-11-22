@@ -31,6 +31,8 @@ typedef enum {
 	SYZOS_API_NESTED_LOAD_CODE = 302,
 	SYZOS_API_NESTED_VMLAUNCH = 303,
 	SYZOS_API_NESTED_VMRESUME = 304,
+	SYZOS_API_NESTED_INTEL_VMWRITE_MASK = 340,
+	SYZOS_API_NESTED_AMD_VMCB_WRITE_MASK = 380,
 	SYZOS_API_STOP, // Must be the last one
 } syzos_api_id;
 
@@ -76,6 +78,11 @@ struct api_call_3 {
 	uint64 args[3];
 };
 
+struct api_call_5 {
+	struct api_call_header header;
+	uint64 args[5];
+};
+
 // This struct must match the push/pop order in nested_vm_exit_handler_intel_asm().
 struct l2_guest_regs {
 	uint64 rax, rbx, rcx, rdx, rsi, rdi, rbp;
@@ -104,6 +111,8 @@ GUEST_CODE static void guest_handle_nested_create_vm(struct api_call_1* cmd, uin
 GUEST_CODE static void guest_handle_nested_load_code(struct api_call_nested_load_code* cmd, uint64 cpu_id);
 GUEST_CODE static void guest_handle_nested_vmlaunch(struct api_call_1* cmd, uint64 cpu_id);
 GUEST_CODE static void guest_handle_nested_vmresume(struct api_call_1* cmd, uint64 cpu_id);
+GUEST_CODE static void guest_handle_nested_intel_vmwrite_mask(struct api_call_5* cmd, uint64 cpu_id);
+GUEST_CODE static void guest_handle_nested_amd_vmcb_write_mask(struct api_call_5* cmd, uint64 cpu_id);
 
 typedef enum {
 	UEXIT_END = (uint64)-1,
@@ -213,6 +222,12 @@ guest_main(uint64 size, uint64 cpu)
 		} else if (call == SYZOS_API_NESTED_VMRESUME) {
 			// Resume a nested VM.
 			guest_handle_nested_vmresume((struct api_call_1*)cmd, cpu);
+		} else if (call == SYZOS_API_NESTED_INTEL_VMWRITE_MASK) {
+			// Write to a VMCS field using masks.
+			guest_handle_nested_intel_vmwrite_mask((struct api_call_5*)cmd, cpu);
+		} else if (call == SYZOS_API_NESTED_AMD_VMCB_WRITE_MASK) {
+			// Write to a VMCB field using masks.
+			guest_handle_nested_amd_vmcb_write_mask((struct api_call_5*)cmd, cpu);
 		}
 		addr += cmd->size;
 		size -= cmd->size;
@@ -249,11 +264,8 @@ GUEST_CODE static noinline void guest_handle_cpuid(uint32 eax, uint32 ecx)
 	    : "rbx", "rdx");
 }
 
-// Write val into an MSR register reg.
-GUEST_CODE static noinline void guest_handle_wrmsr(uint64 reg, uint64 val)
+GUEST_CODE static noinline void wrmsr(uint64 reg, uint64 val)
 {
-	// The wrmsr instruction takes its arguments in specific registers:
-	// edx:eax contains the 64-bit value to write, ecx contains the MSR address.
 	asm volatile(
 	    "wrmsr"
 	    :
@@ -263,20 +275,26 @@ GUEST_CODE static noinline void guest_handle_wrmsr(uint64 reg, uint64 val)
 	    : "memory");
 }
 
+// Write val into an MSR register reg.
+GUEST_CODE static noinline void guest_handle_wrmsr(uint64 reg, uint64 val)
+{
+	wrmsr(reg, val);
+}
+
+GUEST_CODE static noinline uint64 rdmsr(uint64 msr_id)
+{
+	uint32 low = 0, high = 0; // nolint
+	// The RDMSR instruction takes the MSR address in ecx.
+	// It puts the lower 32 bits of the MSR value into eax, and the upper.
+	// 32 bits of the MSR value into edx.
+	asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr_id));
+	return ((uint64)high << 32) | low;
+}
+
 // Read an MSR register, ignore the result.
 GUEST_CODE static noinline void guest_handle_rdmsr(uint64 reg)
 {
-	uint32 low = 0, high = 0;
-	// The rdmsr instruction takes the MSR address in ecx.
-	// It puts the lower 32 bits of the MSR value into eax, and the upper.
-	// 32 bits of the MSR value into edx.
-	asm volatile(
-	    "rdmsr"
-	    : "=a"(low),
-	      "=d"(high)
-	    : "c"(reg)
-	    : // No explicit clobbers.
-	);
+	(void)rdmsr(reg);
 }
 
 // Write to CRn control register.
@@ -488,24 +506,6 @@ GUEST_CODE static inline void write_cr4(uint64 val)
 	asm volatile("mov %0, %%cr4" : : "r"(val));
 }
 
-GUEST_CODE static noinline void wrmsr(uint64 reg, uint64 val)
-{
-	asm volatile(
-	    "wrmsr"
-	    :
-	    : "c"(reg),
-	      "a"((uint32)val),
-	      "d"((uint32)(val >> 32))
-	    : "memory");
-}
-
-GUEST_CODE static noinline uint64 rdmsr(uint32 msr_id)
-{
-	uint64 msr_value;
-	asm volatile("rdmsr" : "=A"(msr_value) : "c"(msr_id));
-	return msr_value;
-}
-
 GUEST_CODE static noinline void vmwrite(uint64 field, uint64 value)
 {
 	uint8 error = 0; // nolint
@@ -678,15 +678,17 @@ GUEST_CODE static noinline void init_vmcs_control_fields(uint64 cpu_id, uint64 v
 	vmwrite(VMCS_PIN_BASED_VM_EXEC_CONTROL, (uint32)vmx_msr);
 
 	// Setup Secondary Processor-Based controls: enable EPT.
-	vmx_msr = rdmsr(X86_MSR_IA32_VMX_PROCBASED_CTLS2);
-	uint32 sec_exec_ctl = (uint32)(vmx_msr >> 32); // Must-be-1 bits.
-	sec_exec_ctl |= ((uint32)vmx_msr & SECONDARY_EXEC_ENABLE_EPT); // Allowed bits.
-	vmwrite(VMCS_SECONDARY_VM_EXEC_CONTROL, sec_exec_ctl);
+	vmx_msr = (uint32)rdmsr(X86_MSR_IA32_VMX_PROCBASED_CTLS2);
+	vmx_msr |= SECONDARY_EXEC_ENABLE_EPT | SECONDARY_EXEC_ENABLE_RDTSCP;
+	vmwrite(VMCS_SECONDARY_VM_EXEC_CONTROL, vmx_msr);
 
 	// Read and write Primary Processor-Based controls from TRUE MSR.
 	// We also add the bit to enable the secondary controls.
 	vmx_msr = rdmsr(X86_MSR_IA32_VMX_TRUE_PROCBASED_CTLS);
-	vmwrite(VMCS_CPU_BASED_VM_EXEC_CONTROL, (uint32)vmx_msr | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS | CPU_BASED_HLT_EXITING);
+	vmx_msr |= CPU_BASED_ACTIVATE_SECONDARY_CONTROLS;
+	// Exit on HLT and RDTSC.
+	vmx_msr |= CPU_BASED_HLT_EXITING | CPU_BASED_RDTSC_EXITING;
+	vmwrite(VMCS_CPU_BASED_VM_EXEC_CONTROL, (uint32)vmx_msr);
 
 	// Set up VM-Exit controls via TRUE MSR: indicate a 64-bit host.
 	vmx_msr = rdmsr(X86_MSR_IA32_VMX_TRUE_EXIT_CTLS);
@@ -739,6 +741,9 @@ GUEST_CODE static noinline void init_vmcs_control_fields(uint64 cpu_id, uint64 v
 typedef enum {
 	SYZOS_NESTED_EXIT_REASON_HLT = 1,
 	SYZOS_NESTED_EXIT_REASON_INVD = 2,
+	SYZOS_NESTED_EXIT_REASON_CPUID = 3,
+	SYZOS_NESTED_EXIT_REASON_RDTSC = 4,
+	SYZOS_NESTED_EXIT_REASON_RDTSCP = 5,
 	SYZOS_NESTED_EXIT_REASON_UNKNOWN = 0xFF,
 } syz_nested_exit_reason;
 
@@ -754,8 +759,11 @@ GUEST_CODE static void guest_uexit_l2(uint64 exit_reason, syz_nested_exit_reason
 	}
 }
 
+#define EXIT_REASON_CPUID 0xa
 #define EXIT_REASON_HLT 0xc
 #define EXIT_REASON_INVD 0xd
+#define EXIT_REASON_RDTSC 0x10
+#define EXIT_REASON_RDTSCP 0x33
 
 GUEST_CODE static syz_nested_exit_reason map_intel_exit_reason(uint64 basic_reason)
 {
@@ -765,15 +773,28 @@ GUEST_CODE static syz_nested_exit_reason map_intel_exit_reason(uint64 basic_reas
 		return SYZOS_NESTED_EXIT_REASON_HLT;
 	if (reason == EXIT_REASON_INVD)
 		return SYZOS_NESTED_EXIT_REASON_INVD;
+	if (reason == EXIT_REASON_CPUID)
+		return SYZOS_NESTED_EXIT_REASON_CPUID;
+	if (reason == EXIT_REASON_RDTSC)
+		return SYZOS_NESTED_EXIT_REASON_RDTSC;
+	if (reason == EXIT_REASON_RDTSCP)
+		return SYZOS_NESTED_EXIT_REASON_RDTSCP;
 	return SYZOS_NESTED_EXIT_REASON_UNKNOWN;
 }
 
 GUEST_CODE static void advance_l2_rip_intel(uint64 basic_reason)
 {
-	if (basic_reason == EXIT_REASON_INVD) {
-		uint64 rip = vmread(VMCS_GUEST_RIP);
-		vmwrite(VMCS_GUEST_RIP, rip + 2);
+	// Disable optimizations.
+	volatile uint64 reason = basic_reason;
+	uint64 rip = vmread(VMCS_GUEST_RIP);
+	if ((reason == EXIT_REASON_INVD) || (reason == EXIT_REASON_CPUID) ||
+	    (reason == EXIT_REASON_RDTSC)) {
+		rip += 2;
+	} else if (reason == EXIT_REASON_RDTSCP) {
+		// We insist on a single-line compound statement for else-if.
+		rip += 3;
 	}
+	vmwrite(VMCS_GUEST_RIP, rip);
 }
 
 // This function is called from inline assembly.
@@ -831,8 +852,11 @@ __attribute__((naked)) GUEST_CODE static void nested_vm_exit_handler_intel_asm(v
 			 [vm_exit_reason] "i"(VMCS_VM_EXIT_REASON) : "memory", "cc", "rbx", "rdi", "rsi");
 }
 
+#define VMEXIT_RDTSC 0x6e
+#define VMEXIT_CPUID 0x72
 #define VMEXIT_INVD 0x76
 #define VMEXIT_HLT 0x78
+#define VMEXIT_RDTSCP 0x87
 
 GUEST_CODE static syz_nested_exit_reason map_amd_exit_reason(uint64 basic_reason)
 {
@@ -842,16 +866,29 @@ GUEST_CODE static syz_nested_exit_reason map_amd_exit_reason(uint64 basic_reason
 		return SYZOS_NESTED_EXIT_REASON_HLT;
 	if (reason == VMEXIT_INVD)
 		return SYZOS_NESTED_EXIT_REASON_INVD;
+	if (reason == VMEXIT_CPUID)
+		return SYZOS_NESTED_EXIT_REASON_CPUID;
+	if (reason == VMEXIT_RDTSC)
+		return SYZOS_NESTED_EXIT_REASON_RDTSC;
+	if (reason == VMEXIT_RDTSCP)
+		return SYZOS_NESTED_EXIT_REASON_RDTSCP;
 	return SYZOS_NESTED_EXIT_REASON_UNKNOWN;
 }
 
 GUEST_CODE static void advance_l2_rip_amd(uint64 basic_reason, uint64 cpu_id, uint64 vm_id)
 {
-	if (basic_reason == VMEXIT_INVD) {
-		uint64 vmcb_addr = X86_SYZOS_ADDR_VMCS_VMCB(cpu_id, vm_id);
-		uint64 rip = vmcb_read64((volatile uint8*)vmcb_addr, VMCB_GUEST_RIP);
-		vmcb_write64(vmcb_addr, VMCB_GUEST_RIP, rip + 2);
+	// Disable optimizations.
+	volatile uint64 reason = basic_reason;
+	uint64 vmcb_addr = X86_SYZOS_ADDR_VMCS_VMCB(cpu_id, vm_id);
+	uint64 rip = vmcb_read64((volatile uint8*)vmcb_addr, VMCB_GUEST_RIP);
+	if ((reason == VMEXIT_INVD) || (reason == VMEXIT_CPUID) ||
+	    (reason == VMEXIT_RDTSC)) {
+		rip += 2;
+	} else if (reason == VMEXIT_RDTSCP) {
+		// We insist on a single-line compound statement for else-if.
+		rip += 3;
 	}
+	vmcb_write64(vmcb_addr, VMCB_GUEST_RIP, rip);
 }
 
 __attribute__((used)) GUEST_CODE static void
@@ -1204,6 +1241,42 @@ guest_handle_nested_vmresume(struct api_call_1* cmd, uint64 cpu_id)
 	} else {
 		guest_run_amd_vm(cpu_id, vm_id);
 	}
+}
+
+GUEST_CODE static noinline void
+guest_handle_nested_intel_vmwrite_mask(struct api_call_5* cmd, uint64 cpu_id)
+{
+	if (get_cpu_vendor() != CPU_VENDOR_INTEL)
+		return;
+	uint64 vm_id = cmd->args[0];
+	nested_vmptrld(cpu_id, vm_id);
+	uint64 field = cmd->args[1];
+	uint64 set_mask = cmd->args[2];
+	uint64 unset_mask = cmd->args[3];
+	uint64 flip_mask = cmd->args[4];
+
+	uint64 current_value = vmread(field);
+	uint64 new_value = (current_value & ~unset_mask) | set_mask;
+	new_value ^= flip_mask;
+	vmwrite(field, new_value);
+}
+
+GUEST_CODE static noinline void
+guest_handle_nested_amd_vmcb_write_mask(struct api_call_5* cmd, uint64 cpu_id)
+{
+	if (get_cpu_vendor() != CPU_VENDOR_AMD)
+		return;
+	uint64 vm_id = cmd->args[0];
+	uint64 vmcb_addr = X86_SYZOS_ADDR_VMCS_VMCB(cpu_id, vm_id);
+	uint64 offset = cmd->args[1];
+	uint64 set_mask = cmd->args[2];
+	uint64 unset_mask = cmd->args[3];
+	uint64 flip_mask = cmd->args[4];
+
+	uint64 current_value = vmcb_read64((volatile uint8*)vmcb_addr, offset);
+	uint64 new_value = (current_value & ~unset_mask) | set_mask;
+	new_value ^= flip_mask;
+	vmcb_write64(vmcb_addr, offset, new_value);
 }
 
 #endif // EXECUTOR_COMMON_KVM_AMD64_SYZOS_H
