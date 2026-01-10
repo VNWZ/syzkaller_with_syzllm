@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -350,10 +351,9 @@ func Abs(path string) string {
 	return filepath.Clean(path)
 }
 
-// CreationTime returns file creation time.
-// May return zero time, if not known.
-func CreationTime(fi os.FileInfo) time.Time {
-	return creationTime(fi)
+// FileTimes returns file creation and modification times.
+func FileTimes(file string) (time.Time, time.Time, error) {
+	return fileTimes(file)
 }
 
 // MonotonicNano returns monotonic time in nanoseconds from some unspecified point in time.
@@ -366,3 +366,20 @@ func CreationTime(fi os.FileInfo) time.Time {
 //
 //go:linkname MonotonicNano runtime.nanotime
 func MonotonicNano() time.Duration
+
+// DiskUsage returns total recursive disk usage of the dir (similar to du -s).
+func DiskUsage(dir string) (uint64, error) {
+	var total uint64
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += sysDiskUsage(info)
+		return nil
+	})
+	return total, err
+}

@@ -1,16 +1,25 @@
-// Copyright 2017 syzkaller project authors. All rights reserved.
+// Copyright 2026 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+//go:build !linux
 
 package osutil
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"time"
 )
 
-func creationTime(fi os.FileInfo) time.Time {
-	return time.Time{}
+func fileTimes(file string) (time.Time, time.Time, error) {
+	stat, err := os.Stat(file)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	// Creation time is not present in stat, so we use modification time for both.
+	modTime := stat.ModTime()
+	return modTime, modTime, nil
 }
 
 func RemoveAll(dir string) error {
@@ -36,4 +45,8 @@ func setPdeathsig(cmd *exec.Cmd, hardKill bool) {
 }
 
 func killPgroup(cmd *exec.Cmd) {
+}
+
+func sysDiskUsage(info fs.FileInfo) uint64 {
+	return uint64(max(0, info.Size()))
 }

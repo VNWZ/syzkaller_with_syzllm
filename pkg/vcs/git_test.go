@@ -4,14 +4,15 @@
 package vcs
 
 import (
-	"os"
 	"reflect"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/syzkaller/pkg/debugtracer"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGitParseCommit(t *testing.T) {
@@ -272,17 +273,10 @@ func TestObject(t *testing.T) {
 	firstRev := []byte("First revision")
 	secondRev := []byte("Second revision")
 
-	if err := os.WriteFile(baseDir+"/object.txt", firstRev, 0644); err != nil {
-		t.Fatal(err)
-	}
-	repo.Git("add", "object.txt")
-	repo.Git("commit", "--no-edit", "--allow-empty", "-m", "target")
-
-	if err := os.WriteFile(baseDir+"/object.txt", secondRev, 0644); err != nil {
-		t.Fatal(err)
-	}
-	repo.Git("add", "object.txt")
-	repo.Git("commit", "--no-edit", "--allow-empty", "-m", "target")
+	repo.commitChangeset("first",
+		writeFile{"object.txt", string(firstRev)})
+	repo.commitChangeset("second",
+		writeFile{"object.txt", string(secondRev)})
 
 	commits, err := repo.repo.LatestCommits("", time.Time{})
 	if err != nil {
@@ -455,7 +449,7 @@ func TestGitFetchShortHash(t *testing.T) {
 }
 
 func TestParseGitDiff(t *testing.T) {
-	files := ParseGitDiff([]byte(`diff --git a/a.txt b/a.txt
+	list := ParseGitDiff([]byte(`diff --git a/a.txt b/a.txt
 index 4c5fd91..8fe1e32 100644
 --- a/a.txt
 +++ b/a.txt
@@ -469,9 +463,108 @@ index 0000000..f8a9677
 +++ b/b.txt
 @@ -0,0 +1 @@
 +Second file.
-diff --git a/c/c.txt b/c/c.txt
-new file mode 100644
-index 0000000..e69de29
+diff --git a/c.txt b/c.txt
+deleted file mode 100644
+index f70f10e..0000000
+--- a/c.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-A
 `))
-	assert.ElementsMatch(t, files, []string{"a.txt", "b.txt", "c/c.txt"})
+	assert.Equal(t, list, []ModifiedFile{
+		{
+			Name:     `a.txt`,
+			LeftHash: `4c5fd91`,
+		},
+		{
+			Name:     `b.txt`,
+			LeftHash: `0000000`,
+		},
+		{
+			Name:     `c.txt`,
+			LeftHash: `f70f10e`,
+		},
+	})
+}
+
+func TestGitFileHashes(t *testing.T) {
+	repo := MakeTestRepo(t, t.TempDir())
+	commit1 := repo.commitChangeset("first commit", writeFile{"object.txt", "some text"})
+	commit2 := repo.commitChangeset("second commit", writeFile{"object2.txt", "some text2"})
+
+	map1, err := repo.repo.fileHashes(commit1.Hash, []string{"object.txt", "object2.txt"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, map1["object.txt"])
+
+	map2, err := repo.repo.fileHashes(commit2.Hash, []string{"object.txt", "object2.txt"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, map2["object.txt"])
+	assert.NotEmpty(t, map2["object2.txt"])
+}
+
+func TestBaseForDiff(t *testing.T) {
+	repo := MakeTestRepo(t, t.TempDir())
+	repo.commitChangeset("first commit",
+		writeFile{"a.txt", "content of a.txt"},
+		writeFile{"b.txt", "content of b.txt"},
+	)
+	commit2 := repo.commitChangeset("second commit",
+		writeFile{"c.txt", "content of c.txt"},
+		writeFile{"d.txt", "content of d.txt"},
+	)
+	// Create a diff.
+	commit3 := repo.commitChangeset("third commit",
+		writeFile{"a.txt", "update a.txt"},
+	)
+	diff, err := repo.repo.Diff(commit2.Hash, commit3.Hash)
+	require.NoError(t, err)
+	t.Run("conflicting", func(t *testing.T) {
+		_, err := repo.repo.SwitchCommit(commit2.Hash)
+		require.NoError(t, err)
+		// Create a different change on top of commit2.
+		repo.Git("checkout", "-b", "branch-a")
+		time.Sleep(time.Second)
+		repo.commitChangeset("patch a.txt",
+			writeFile{"a.txt", "another change to a.txt"},
+		)
+		// Yet the patch could only be applied to commit2
+		base, err := repo.repo.BaseForDiff(diff, &debugtracer.TestTracer{T: t})
+		require.NoError(t, err)
+		require.NotNil(t, base)
+		assert.Equal(t, []string{"branch-a", "master"}, base.Branches)
+		assert.Equal(t, commit2.Hash, base.Hash)
+	})
+	t.Run("choose latest", func(t *testing.T) {
+		_, err := repo.repo.SwitchCommit(commit2.Hash)
+		require.NoError(t, err)
+		// Wait a second and add one more commit.
+		// (Otherwise the test might be flaky).
+		time.Sleep(time.Second)
+		repo.Git("checkout", "-b", "branch-b")
+		commit4 := repo.commitChangeset("unrelated commit",
+			writeFile{"new.txt", "create new file"},
+		)
+		// Since the commit did not touch a.txt, it's the expected one.
+		base, err := repo.repo.BaseForDiff(diff, &debugtracer.TestTracer{T: t})
+		require.NoError(t, err)
+		require.NotNil(t, base)
+		assert.Equal(t, []string{"branch-b"}, base.Branches)
+		assert.Equal(t, commit4.Hash, base.Hash)
+	})
+	t.Run("ignore unknown objects", func(t *testing.T) {
+		// It's okay if the diff contains unknown hashes.
+		diff2 := `
+diff --git a/b.txt b/b.txt
+deleted file mode 100644
+index f70f10e..0000000
+--- a/b.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-A`
+		twoDiffs := append(append([]byte{}, diff...), diff2...)
+		base, err := repo.repo.BaseForDiff(twoDiffs, &debugtracer.TestTracer{T: t})
+		require.NoError(t, err)
+		require.NotNil(t, base)
+		assert.Equal(t, []string{"branch-b"}, base.Branches)
+	})
 }
