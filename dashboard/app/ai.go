@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,7 +30,9 @@ type uiAIJobsPage struct {
 }
 
 type uiAIJobPage struct {
-	Header     *uiHeader
+	Header *uiHeader
+	Job    *uiAIJob
+	// The slice contains the same single Job, just for HTML templates convenience.
 	Jobs       []*uiAIJob
 	Results    []*uiAIResult
 	Trajectory []*uiAITrajectorySpan
@@ -49,6 +52,7 @@ type uiAIJob struct {
 	CodeRevision     string
 	CodeRevisionLink string
 	Error            string
+	Correct          string
 }
 
 type uiAIResult struct {
@@ -103,6 +107,22 @@ func handleAIJobPage(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return err
 	}
+	if correct := r.FormValue("correct"); correct != "" {
+		if !job.Finished.Valid || job.Error != "" {
+			return fmt.Errorf("job is in wrong state to set correct status")
+		}
+		switch correct {
+		case aiCorrectnessCorrect:
+			job.Correct = spanner.NullBool{Bool: true, Valid: true}
+		case aiCorrectnessIncorrect:
+			job.Correct = spanner.NullBool{Bool: false, Valid: true}
+		default:
+			job.Correct = spanner.NullBool{}
+		}
+		if err := aiJobUpdate(ctx, job); err != nil {
+			return err
+		}
+	}
 	trajectory, err := aidb.LoadTrajectory(ctx, job.ID)
 	if err != nil {
 		return err
@@ -111,9 +131,11 @@ func handleAIJobPage(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return err
 	}
+	uiJob := makeUIAIJob(job)
 	page := &uiAIJobPage{
 		Header:     hdr,
-		Jobs:       []*uiAIJob{makeUIAIJob(job)},
+		Job:        uiJob,
+		Jobs:       []*uiAIJob{uiJob},
 		Trajectory: makeUIAITrajectory(trajectory),
 	}
 	if m, ok := job.Results.Value.(map[string]any); ok && job.Results.Valid {
@@ -131,6 +153,16 @@ func handleAIJobPage(ctx context.Context, w http.ResponseWriter, r *http.Request
 }
 
 func makeUIAIJob(job *aidb.Job) *uiAIJob {
+	correct := aiCorrectnessIncorrect
+	if !job.Finished.Valid {
+		correct = aiCorrectnessPending
+	} else if job.Error != "" {
+		correct = aiCorrectnessErrored
+	} else if !job.Correct.Valid {
+		correct = aiCorrectnessUnset
+	} else if job.Correct.Bool {
+		correct = aiCorrectnessCorrect
+	}
 	return &uiAIJob{
 		ID:               job.ID,
 		Link:             fmt.Sprintf("/ai_job?id=%v", job.ID),
@@ -144,6 +176,7 @@ func makeUIAIJob(job *aidb.Job) *uiAIJob {
 		CodeRevision:     job.CodeRevision,
 		CodeRevisionLink: vcs.LogLink(vcs.SyzkallerRepo, job.CodeRevision),
 		Error:            job.Error,
+		Correct:          correct,
 	}
 }
 
@@ -252,8 +285,90 @@ func apiAIJobDone(ctx context.Context, req *dashapi.AIJobDoneReq) (any, error) {
 	if len(req.Results) != 0 {
 		job.Results = spanner.NullJSON{Value: req.Results, Valid: true}
 	}
-	err = aidb.UpdateJob(ctx, job)
+	err = aiJobUpdate(ctx, job)
 	return nil, err
+}
+
+func aiJobUpdate(ctx context.Context, job *aidb.Job) error {
+	if err := aidb.UpdateJob(ctx, job); err != nil {
+		return err
+	}
+	if !job.BugID.Valid || !job.Finished.Valid || job.Error != "" {
+		return nil
+	}
+	bug, err := loadBug(ctx, job.BugID.StringVal)
+	if err != nil {
+		return err
+	}
+	labelType, labelValue, labelAdd, err := aiBugLabel(job)
+	if err != nil || labelType == EmptyLabel {
+		return err
+	}
+	label := BugLabel{
+		Label: labelType,
+		Value: labelValue,
+		Link:  job.ID,
+	}
+	labelSet := makeLabelSet(ctx, bug)
+	return updateSingleBug(ctx, bug.key(ctx), func(bug *Bug) error {
+		if bug.HasUserLabel(labelType) {
+			return nil
+		}
+		if labelAdd {
+			return bug.SetLabels(labelSet, []BugLabel{label})
+		}
+		bug.UnsetLabels(labelType)
+		return nil
+	})
+}
+
+func aiBugLabel(job *aidb.Job) (typ BugLabelType, value string, set bool, err0 error) {
+	switch job.Type {
+	case ai.WorkflowAssessmentKCSAN:
+		// For now we require a manual correctness check,
+		// later we may apply some labels w/o the manual check.
+		if !job.Correct.Valid {
+			return
+		}
+		if !job.Correct.Bool {
+			return RaceLabel, "", false, nil
+		}
+		res, err := castJobResults[ai.AssessmentKCSANOutputs](job)
+		if err != nil {
+			err0 = err
+			return
+		}
+		if !res.Confident {
+			return
+		}
+		if res.Benign {
+			return RaceLabel, BenignRace, true, nil
+		}
+		return RaceLabel, HarmfulRace, true, nil
+	}
+	return
+}
+
+func castJobResults[T any](job *aidb.Job) (T, error) {
+	var res T
+	raw, ok := job.Results.Value.(map[string]any)
+	if !ok || !job.Results.Valid {
+		return res, fmt.Errorf("finished job %v %v does not have results", job.Type, job.ID)
+	}
+	// Database may store older versions of the output structs.
+	// It's not possible to automatically handle all possible changes to the structs.
+	// For now we just parse in some way. Later when we start changing output structs,
+	// we may need to reconsider and use more careful parsing.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return res, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil {
+		return res, fmt.Errorf("failed to unmarshal %T: %w", res, err)
+	}
+	return res, nil
 }
 
 func apiAITrajectoryLog(ctx context.Context, req *dashapi.AITrajectoryReq) (any, error) {
@@ -446,6 +561,14 @@ func workflowsForBug(bug *Bug, manual bool) map[ai.WorkflowType]bool {
 	}
 	return workflows
 }
+
+const (
+	aiCorrectnessCorrect   = "✅"
+	aiCorrectnessIncorrect = "❌"
+	aiCorrectnessUnset     = "❓"
+	aiCorrectnessPending   = "⏳"
+	aiCorrectnessErrored   = "💥"
+)
 
 func nullTime(v spanner.NullTime) time.Time {
 	if !v.Valid {
