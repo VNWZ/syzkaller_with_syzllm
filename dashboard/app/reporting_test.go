@@ -1406,14 +1406,76 @@ func TestCoverageRegression(t *testing.T) {
 	assert.Equal(t, 1, len(c.emailSink))
 	msg := <-c.emailSink
 	assert.Equal(t, []string{"test@test.test"}, msg.To)
-	assert.Equal(t, "coverage-tests coverage regression in December 1999", msg.Subject)
+	assert.Equal(t, "coverage-tests coverage regressions in December 1999", msg.Subject)
 	wantLink := "https://testapp.appspot.com/coverage-tests/coverage?" +
 		"dateto=1999-12-31&min-cover-lines-drop=1&order-by-cover-lines-drop=1&period=month&period_count=2"
-	assert.Equal(t, `Regressions happened in 'coverage-tests' from November 1999 (30 days) to December 1999 (31 days).
+	assert.Equal(t, `coverage-tests regressions in December 1999 (31 days) since November 1999 (30 days).
 Web version: `+wantLink+`
 
 Blocks diff,	Path
        -100	/file_name.c
 
 `, msg.Body)
+}
+
+func TestSkipStage(t *testing.T) {
+	// The test ensures that manuallyUpstreamed works as intended in reporting filters.
+	c := NewCtx(t)
+	defer c.Close()
+	client := c.makeClient(clientSkipStage, keySkipStage, true)
+
+	build := testBuild(1)
+	client.UploadBuild(build)
+
+	{
+		// Normal scenario - manual upstreaming.
+		client.ReportCrash(testCrash(build, 1))
+		rep := client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":1}`)
+		c.client.updateBug(rep.ID, dashapi.BugStatusUpstream, "")
+		client.pollNotifs(0)
+		rep = client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":3}`)
+		c.client.updateBug(rep.ID, dashapi.BugStatusInvalid, "")
+	}
+
+	{
+		// Auto-upstreamed.
+		client.ReportCrash(testCrash(build, 2))
+		rep := client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":1}`)
+		c.advanceTime(5 * 24 * time.Hour)
+		notifs := client.pollNotifs(1)
+		reply, _ := client.ReportingUpdate(&dashapi.BugUpdate{
+			ID:           notifs[0].ID,
+			Status:       dashapi.BugStatusUpstream,
+			Notification: true,
+		})
+		c.expectEQ(reply.OK, true)
+		rep = client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":2}`)
+		c.client.updateBug(rep.ID, dashapi.BugStatusInvalid, "")
+	}
+
+	{
+		// Manually invalidated.
+		client.ReportCrash(testCrash(build, 3))
+		rep := client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":1}`)
+		c.client.updateBug(rep.ID, dashapi.BugStatusInvalid, "")
+		client.pollNotifs(0)
+		client.pollBugs(0)
+	}
+
+	{
+		// Don't react to skipped reporting stages.
+		crash := testCrash(build, 4)
+		crash.Title = "skip reporting1"
+		client.ReportCrash(crash)
+		rep := client.pollBug()
+		c.expectEQ(string(rep.Config), `{"Index":2}`)
+		// If we do react, there would be an upstreaming notification.
+		client.pollNotifs(0)
+		c.client.updateBug(rep.ID, dashapi.BugStatusInvalid, "")
+	}
 }

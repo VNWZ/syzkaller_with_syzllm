@@ -387,6 +387,18 @@ func (bug *Bug) managerConfig(c context.Context) *ConfigManager {
 	return &mgr
 }
 
+func (bug *Bug) manuallyUpstreamed(name string) bool {
+	reporting := bugReportingByName(bug, name)
+	if reporting == nil {
+		return false
+	}
+	if reporting.Reported.IsZero() {
+		// Either not reported yet, or fully skipped (if Closed is not empty).
+		return false
+	}
+	return !reporting.Closed.IsZero() && !reporting.Auto
+}
+
 func createNotification(c context.Context, typ dashapi.BugNotif, public bool, text string, bug *Bug,
 	reporting *Reporting, bugReporting *BugReporting) (*dashapi.BugNotification, error) {
 	reportingConfig, err := json.Marshal(reporting.Config)

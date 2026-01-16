@@ -28,11 +28,22 @@ Detailed info on a single AI job execution.
 				<button type="submit">Set</button>
 			</fieldset>
 		</form>
+		<br>
 	{{end}}
 
-	{{range $res := .Results}}
-		<br><b>{{$res.Name}}:</b><br>
-		<div id="ai_result_div"><pre>{{$res.Value}}</pre></div><br>
+	{{range $res := .Job.Results}}
+		{{if $res.IsBool}}
+			<b>{{$res.Name}}:</b>
+			{{if $res.Value}}✅{{else}}❌{{end}}&nbsp;&nbsp;&nbsp;
+		{{else}}
+			<br><br><b>{{$res.Name}}:</b>
+			<br><div id="ai_result_div"><pre>{{$res.Value}}</pre></div>
+		{{end}}
+	{{end}}
+
+	{{if .CrashReport}}
+	<br><b>Crash report:</b><br>
+	<div id="crash_div"><pre>{{.CrashReport}}</pre></div><br>
 	{{end}}
 
 	<table class="list_table">
