@@ -93,8 +93,7 @@ func TestWorkflow(t *testing.T) {
 	flows := make(map[string]*Flow)
 	err := register[flowInputs, flowOutputs]("test", "description", flows, []*Flow{
 		{
-			Name:  "flow",
-			Model: "model",
+			Name: "flow",
 			Root: NewPipeline(
 				NewFuncAction("func-action",
 					func(ctx *Context, args firstFuncInputs) (firstFuncOutputs, error) {
@@ -107,6 +106,7 @@ func TestWorkflow(t *testing.T) {
 					}),
 				&LLMAgent{
 					Name:        "smarty",
+					Model:       "model1",
 					Reply:       "OutFoo",
 					Outputs:     LLMOutputs[agentOutputs](),
 					Temperature: 0,
@@ -143,6 +143,7 @@ func TestWorkflow(t *testing.T) {
 					}),
 				&LLMAgent{
 					Name:        "swarm",
+					Model:       "model2",
 					Reply:       "OutSwarm",
 					Candidates:  2,
 					Outputs:     LLMOutputs[swarmOutputs](),
@@ -152,6 +153,7 @@ func TestWorkflow(t *testing.T) {
 				},
 				&LLMAgent{
 					Name:        "aggregator",
+					Model:       "model3",
 					Reply:       "OutAggregator",
 					Temperature: 0,
 					Instruction: "Aggregate!",
@@ -176,12 +178,13 @@ func TestWorkflow(t *testing.T) {
 			stubTime = stubTime.Add(time.Second)
 			return stubTime
 		},
-		generateContent: func(cfg *genai.GenerateContentConfig, req []*genai.Content) (
+		generateContent: func(model string, cfg *genai.GenerateContentConfig, req []*genai.Content) (
 			*genai.GenerateContentResponse, error) {
 			replySeq++
 			if replySeq < 4 {
+				assert.Equal(t, model, "model1")
 				assert.Equal(t, cfg.SystemInstruction, genai.NewContentFromText("You are smarty. baz"+
-					llmOutputsInstruction, genai.RoleUser))
+					llmMultipleToolsInstruction+llmOutputsInstruction, genai.RoleUser))
 				assert.Equal(t, cfg.Temperature, genai.Ptr[float32](0))
 				assert.Equal(t, len(cfg.Tools), 3)
 				assert.Equal(t, cfg.Tools[0].FunctionDeclarations[0].Name, "tool1")
@@ -190,11 +193,13 @@ func TestWorkflow(t *testing.T) {
 				assert.Equal(t, cfg.Tools[1].FunctionDeclarations[0].Description, "tool 2 description")
 				assert.Equal(t, cfg.Tools[2].FunctionDeclarations[0].Name, "set-results")
 			} else if replySeq < 8 {
+				assert.Equal(t, model, "model2")
 				assert.Equal(t, cfg.SystemInstruction, genai.NewContentFromText("Do something. baz"+
 					llmOutputsInstruction, genai.RoleUser))
 				assert.Equal(t, len(cfg.Tools), 1)
 				assert.Equal(t, cfg.Tools[0].FunctionDeclarations[0].Name, "set-results")
 			} else {
+				assert.Equal(t, model, "model3")
 				assert.Equal(t, cfg.SystemInstruction, genai.NewContentFromText("Aggregate!", genai.RoleUser))
 				assert.Equal(t, len(cfg.Tools), 0)
 			}
@@ -437,8 +442,9 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     1,
 			Type:        trajectory.SpanAgent,
 			Name:        "smarty",
+			Model:       "model1",
 			Started:     startTime.Add(4 * time.Second),
-			Instruction: "You are smarty. baz" + llmOutputsInstruction,
+			Instruction: "You are smarty. baz" + llmMultipleToolsInstruction + llmOutputsInstruction,
 			Prompt:      "Prompt: baz func-output",
 		},
 		{
@@ -446,6 +452,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 2,
 			Type:    trajectory.SpanLLM,
 			Name:    "smarty",
+			Model:   "model1",
 			Started: startTime.Add(5 * time.Second),
 		},
 		{
@@ -453,6 +460,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  2,
 			Type:     trajectory.SpanLLM,
 			Name:     "smarty",
+			Model:    "model1",
 			Started:  startTime.Add(5 * time.Second),
 			Finished: startTime.Add(6 * time.Second),
 			Thoughts: "I am thinking I need to call some tools",
@@ -513,6 +521,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 2,
 			Type:    trajectory.SpanLLM,
 			Name:    "smarty",
+			Model:   "model1",
 			Started: startTime.Add(11 * time.Second),
 		},
 		{
@@ -520,6 +529,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  2,
 			Type:     trajectory.SpanLLM,
 			Name:     "smarty",
+			Model:    "model1",
 			Started:  startTime.Add(11 * time.Second),
 			Finished: startTime.Add(12 * time.Second),
 			Thoughts: "Completly blank.Whatever.",
@@ -556,6 +566,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 2,
 			Type:    trajectory.SpanLLM,
 			Name:    "smarty",
+			Model:   "model1",
 			Started: startTime.Add(15 * time.Second),
 		},
 		{
@@ -563,6 +574,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  2,
 			Type:     trajectory.SpanLLM,
 			Name:     "smarty",
+			Model:    "model1",
 			Started:  startTime.Add(15 * time.Second),
 			Finished: startTime.Add(16 * time.Second),
 		},
@@ -571,9 +583,10 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     1,
 			Type:        trajectory.SpanAgent,
 			Name:        "smarty",
+			Model:       "model1",
 			Started:     startTime.Add(4 * time.Second),
 			Finished:    startTime.Add(17 * time.Second),
-			Instruction: "You are smarty. baz" + llmOutputsInstruction,
+			Instruction: "You are smarty. baz" + llmMultipleToolsInstruction + llmOutputsInstruction,
 			Prompt:      "Prompt: baz func-output",
 			Reply:       "hello, world!",
 			Results: map[string]any{
@@ -611,6 +624,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     2,
 			Type:        trajectory.SpanAgent,
 			Name:        "swarm",
+			Model:       "model2",
 			Started:     startTime.Add(21 * time.Second),
 			Instruction: "Do something. baz" + llmOutputsInstruction,
 			Prompt:      "Prompt: baz",
@@ -620,6 +634,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 3,
 			Type:    trajectory.SpanLLM,
 			Name:    "swarm",
+			Model:   "model2",
 			Started: startTime.Add(22 * time.Second),
 		},
 		{
@@ -627,6 +642,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  3,
 			Type:     trajectory.SpanLLM,
 			Name:     "swarm",
+			Model:    "model2",
 			Started:  startTime.Add(22 * time.Second),
 			Finished: startTime.Add(23 * time.Second),
 		},
@@ -662,6 +678,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 3,
 			Type:    trajectory.SpanLLM,
 			Name:    "swarm",
+			Model:   "model2",
 			Started: startTime.Add(26 * time.Second),
 		},
 		{
@@ -669,6 +686,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  3,
 			Type:     trajectory.SpanLLM,
 			Name:     "swarm",
+			Model:    "model2",
 			Started:  startTime.Add(26 * time.Second),
 			Finished: startTime.Add(27 * time.Second),
 		},
@@ -677,6 +695,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     2,
 			Type:        trajectory.SpanAgent,
 			Name:        "swarm",
+			Model:       "model2",
 			Started:     startTime.Add(21 * time.Second),
 			Finished:    startTime.Add(28 * time.Second),
 			Instruction: "Do something. baz" + llmOutputsInstruction,
@@ -692,6 +711,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     2,
 			Type:        trajectory.SpanAgent,
 			Name:        "swarm",
+			Model:       "model2",
 			Started:     startTime.Add(29 * time.Second),
 			Instruction: "Do something. baz" + llmOutputsInstruction,
 			Prompt:      "Prompt: baz",
@@ -701,6 +721,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 3,
 			Type:    trajectory.SpanLLM,
 			Name:    "swarm",
+			Model:   "model2",
 			Started: startTime.Add(30 * time.Second),
 		},
 		{
@@ -708,6 +729,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  3,
 			Type:     trajectory.SpanLLM,
 			Name:     "swarm",
+			Model:    "model2",
 			Started:  startTime.Add(30 * time.Second),
 			Finished: startTime.Add(31 * time.Second),
 		},
@@ -743,6 +765,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 3,
 			Type:    trajectory.SpanLLM,
 			Name:    "swarm",
+			Model:   "model2",
 			Started: startTime.Add(34 * time.Second),
 		},
 		{
@@ -750,6 +773,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  3,
 			Type:     trajectory.SpanLLM,
 			Name:     "swarm",
+			Model:    "model2",
 			Started:  startTime.Add(34 * time.Second),
 			Finished: startTime.Add(35 * time.Second),
 		},
@@ -758,6 +782,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     2,
 			Type:        trajectory.SpanAgent,
 			Name:        "swarm",
+			Model:       "model2",
 			Started:     startTime.Add(29 * time.Second),
 			Finished:    startTime.Add(36 * time.Second),
 			Instruction: "Do something. baz" + llmOutputsInstruction,
@@ -781,6 +806,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     1,
 			Type:        trajectory.SpanAgent,
 			Name:        "aggregator",
+			Model:       "model3",
 			Started:     startTime.Add(38 * time.Second),
 			Instruction: "Aggregate!",
 			Prompt: `Prompt: baz
@@ -800,6 +826,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting: 2,
 			Type:    trajectory.SpanLLM,
 			Name:    "aggregator",
+			Model:   "model3",
 			Started: startTime.Add(39 * time.Second),
 		},
 		{
@@ -807,6 +834,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:  2,
 			Type:     trajectory.SpanLLM,
 			Name:     "aggregator",
+			Model:    "model3",
 			Started:  startTime.Add(39 * time.Second),
 			Finished: startTime.Add(40 * time.Second),
 		},
@@ -815,6 +843,7 @@ func TestWorkflow(t *testing.T) {
 			Nesting:     1,
 			Type:        trajectory.SpanAgent,
 			Name:        "aggregator",
+			Model:       "model3",
 			Started:     startTime.Add(38 * time.Second),
 			Finished:    startTime.Add(41 * time.Second),
 			Instruction: "Aggregate!",
@@ -847,7 +876,7 @@ func TestWorkflow(t *testing.T) {
 		expected = expected[1:]
 		return nil
 	}
-	res, err := flows["test-flow"].Execute(ctx, "model", workdir, inputs, cache, onEvent)
+	res, err := flows["test-flow"].Execute(ctx, "", workdir, inputs, cache, onEvent)
 	require.NoError(t, err)
 	require.Equal(t, replySeq, 8)
 	require.Equal(t, res, expectedOutputs)
@@ -867,7 +896,6 @@ func TestNoInputs(t *testing.T) {
 	flows := make(map[string]*Flow)
 	err := register[flowInputs, flowOutputs]("test", "description", flows, []*Flow{
 		{
-			Model: "model",
 			Root: NewFuncAction("func-action",
 				func(ctx *Context, args flowInputs) (flowOutputs, error) {
 					return flowOutputs{}, nil
@@ -876,7 +904,7 @@ func TestNoInputs(t *testing.T) {
 	})
 	require.NoError(t, err)
 	stub := &stubContext{
-		generateContent: func(cfg *genai.GenerateContentConfig, req []*genai.Content) (
+		generateContent: func(model string, cfg *genai.GenerateContentConfig, req []*genai.Content) (
 			*genai.GenerateContentResponse, error) {
 			return nil, nil
 		},
@@ -886,7 +914,265 @@ func TestNoInputs(t *testing.T) {
 	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, stub.timeNow)
 	require.NoError(t, err)
 	onEvent := func(span *trajectory.Span) error { return nil }
-	_, err = flows["test"].Execute(ctx, "model", workdir, inputs, cache, onEvent)
+	_, err = flows["test"].Execute(ctx, "", workdir, inputs, cache, onEvent)
 	require.Equal(t, err.Error(), "flow inputs are missing:"+
-		" field InBar is not present when converting map to aflow.flowInputs")
+		" field \"InBar\" is not present when converting map to aflow.flowInputs")
+}
+
+func TestQuotaResetTime(t *testing.T) {
+	type Test struct {
+		when  time.Time
+		reset time.Time
+	}
+	testLoc := time.FixedZone("+4h", 4*60*60) // seconds east of UTC
+	tests := []Test{
+		{time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2000, 1, 1, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 0, 0, 0, 0, testLoc), time.Date(2000, 1, 1, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 8, 0, 0, 0, time.UTC), time.Date(2000, 1, 1, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 8, 0, 0, 0, testLoc), time.Date(2000, 1, 1, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 9, 0, 0, 0, time.UTC), time.Date(2000, 1, 2, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 9, 0, 0, 0, testLoc), time.Date(2000, 1, 1, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 13, 0, 0, 0, time.UTC), time.Date(2000, 1, 2, 8, 5, 0, 0, time.UTC)},
+		{time.Date(2000, 1, 1, 13, 0, 0, 0, testLoc), time.Date(2000, 1, 2, 8, 5, 0, 0, time.UTC)},
+	}
+	for _, test := range tests {
+		got := QuotaResetTime(test.when)
+		assert.Equal(t, test.reset, got, "when: %v", test.when)
+	}
+}
+
+func TestToolMisbehavior(t *testing.T) {
+	type flowOutputs struct {
+		Reply            string
+		AdditionalOutput int
+	}
+	type tool1Args struct {
+		Tool1Arg string `jsonschema:"arg"`
+	}
+	type tool2Args struct {
+		Tool2Arg int `jsonschema:"arg"`
+	}
+	type tool2Results struct {
+		Result int `jsonschema:"arg"`
+	}
+	flows := make(map[string]*Flow)
+	err := register[struct{}, flowOutputs]("test", "description", flows, []*Flow{
+		{
+			Name: "flow",
+			Root: NewPipeline(
+				&LLMAgent{
+					Name:        "smarty",
+					Model:       "model1",
+					Temperature: 1,
+					Reply:       "Reply",
+
+					Outputs: LLMOutputs[struct {
+						AdditionalOutput int `jsonschema:"arg"`
+					}](),
+					Instruction: "Do something!",
+					Prompt:      "Data",
+					Tools: []Tool{
+						NewFuncTool("tool1", func(ctx *Context, state struct{}, args tool1Args) (struct{}, error) {
+							return struct{}{}, nil
+						}, "tool description"),
+						NewFuncTool("tool2", func(ctx *Context, state struct{}, args tool2Args) (tool2Results, error) {
+							return tool2Results{42}, nil
+						}, "tool description"),
+					},
+				},
+			),
+		},
+	})
+	require.NoError(t, err)
+	replySeq := 0
+	stub := &stubContext{
+		generateContent: func(model string, cfg *genai.GenerateContentConfig, req []*genai.Content) (
+			*genai.GenerateContentResponse, error) {
+			replySeq++
+			switch replySeq {
+			case 1:
+				return &genai.GenerateContentResponse{
+					Candidates: []*genai.Candidate{{Content: &genai.Content{
+						Role: string(genai.RoleModel),
+						Parts: []*genai.Part{
+							// This tool call is OK, and the tool must be called.
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id1",
+									Name: "tool1",
+									Args: map[string]any{
+										"Tool1Arg": "string",
+									},
+								},
+							},
+							// Incorrect argument type.
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id2",
+									Name: "tool2",
+									Args: map[string]any{
+										"Tool2Arg": "string-instead-of-int",
+									},
+								},
+							},
+							// Missing argument.
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id3",
+									Name: "tool2",
+									Args: map[string]any{},
+								},
+							},
+							// Excessive argument.
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id4",
+									Name: "tool2",
+									Args: map[string]any{
+										"Tool2Arg":  0,
+										"Tool2Arg2": 100,
+									},
+								},
+							},
+							// Tool that does not exist.
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id5",
+									Name: "tool3",
+									Args: map[string]any{
+										"Arg": 0,
+									},
+								},
+							},
+							// Wrong arg for set-results (should not count as it was called).
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id6",
+									Name: "set-results",
+									Args: map[string]any{
+										"WrongArg": 0,
+									},
+								},
+							},
+						}}}}}, nil
+			case 2:
+				require.Equal(t, len(req), 3)
+				assert.Equal(t, req[2], &genai.Content{
+					Role: string(genai.RoleUser),
+					Parts: []*genai.Part{
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:       "id1",
+								Name:     "tool1",
+								Response: map[string]any{},
+							},
+						},
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "id2",
+								Name: "tool2",
+								Response: map[string]any{
+									"error": "argument \"Tool2Arg\" has wrong type: got string, want int",
+								},
+							},
+						},
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "id3",
+								Name: "tool2",
+								Response: map[string]any{
+									"error": "missing argument \"Tool2Arg\"",
+								},
+							},
+						},
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "id4",
+								Name: "tool2",
+								Response: map[string]any{
+									"Result": 42,
+								},
+							},
+						},
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "id5",
+								Name: "tool3",
+								Response: map[string]any{
+									"error": "tool \"tool3\" does not exist, please correct the name",
+								},
+							},
+						},
+						{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "id6",
+								Name: "set-results",
+								Response: map[string]any{
+									"error": "missing argument \"AdditionalOutput\"",
+								},
+							},
+						},
+					}})
+				// Now it tries to provide the final result w/o calling set-results (successfully).
+				return &genai.GenerateContentResponse{
+					Candidates: []*genai.Candidate{
+						{Content: &genai.Content{
+							Role: string(genai.RoleUser),
+							Parts: []*genai.Part{
+								genai.NewPartFromText("I am done")},
+						}}}}, nil
+			case 3:
+				// Reply that set-results wasn't called.
+				require.Equal(t, len(req), 5)
+				assert.Equal(t, req[4], genai.NewContentFromText(llmMissingOutputs, genai.RoleUser))
+				// Now call it twice.
+				return &genai.GenerateContentResponse{
+					Candidates: []*genai.Candidate{{Content: &genai.Content{
+						Role: string(genai.RoleModel),
+						Parts: []*genai.Part{
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id1",
+									Name: "set-results",
+									Args: map[string]any{
+										"AdditionalOutput": 1,
+									},
+								},
+							},
+							{
+								FunctionCall: &genai.FunctionCall{
+									ID:   "id2",
+									Name: "set-results",
+									Args: map[string]any{
+										"AdditionalOutput": 2,
+									},
+								},
+							},
+						}}}}}, nil
+			case 4:
+				return &genai.GenerateContentResponse{
+					Candidates: []*genai.Candidate{
+						{Content: &genai.Content{
+							Role: string(genai.RoleUser),
+							Parts: []*genai.Part{
+								genai.NewPartFromText("Finally done")},
+						}}}}, nil
+			default:
+				t.Fatal("unexpected LLM calls")
+				return nil, nil
+			}
+		},
+	}
+	ctx := context.WithValue(context.Background(), stubContextKey, stub)
+	workdir := t.TempDir()
+	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, stub.timeNow)
+	require.NoError(t, err)
+	onEvent := func(span *trajectory.Span) error { return nil }
+	res, err := flows["test-flow"].Execute(ctx, "", workdir, map[string]any{}, cache, onEvent)
+	require.NoError(t, err)
+	require.Equal(t, replySeq, 4)
+	require.Equal(t, res, map[string]any{
+		"Reply":            "Finally done",
+		"AdditionalOutput": 2,
+	})
 }

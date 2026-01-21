@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/syzkaller/pkg/aflow/trajectory"
@@ -18,6 +19,9 @@ import (
 type LLMAgent struct {
 	// For logging/debugging.
 	Name string
+	// The default Gemini model name to execute this workflow.
+	// Use the consts defined below.
+	Model string
 	// Name of the state variable to store the final reply of the agent.
 	// These names can be used in subsequent action instructions/prompts,
 	// and as final workflow outputs.
@@ -42,6 +46,13 @@ type LLMAgent struct {
 	// Set of tools for the agent to use.
 	Tools []Tool
 }
+
+// Consts to use for LLMAgent.Model.
+// See https://ai.google.dev/gemini-api/docs/models
+const (
+	BestExpensiveModel = "gemini-3-pro-preview"
+	GoodBalancedModel  = "gemini-3-flash-preview"
+)
 
 // Tool represents a custom tool an LLMAgent can invoke.
 // Use NewFuncTool to create function-based tools.
@@ -80,6 +91,14 @@ const llmOutputsInstruction = `
 Use set-results tool to provide results of the analysis.
 It must be called exactly once before the final reply.
 Ignore results of this tool.
+`
+
+const llmMultipleToolsInstruction = `
+Prefer calling several tools at the same time to save round-trips.
+`
+
+const llmMissingOutputs = `You did not call set-results tool.
+Please call set-results tool to provide results of the analysis.
 `
 
 type llmOutputs struct {
@@ -134,6 +153,7 @@ func (a *LLMAgent) executeOne(ctx *Context) (string, map[string]any, error) {
 		Name:        a.Name,
 		Instruction: instruction,
 		Prompt:      formatTemplate(a.Prompt, ctx.state),
+		Model:       ctx.modelName(a.Model),
 	}
 	if err := ctx.startSpan(span); err != nil {
 		return "", nil, err
@@ -152,8 +172,9 @@ func (a *LLMAgent) chat(ctx *Context, cfg *genai.GenerateContentConfig, tools ma
 	req := []*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)}
 	for {
 		reqSpan := &trajectory.Span{
-			Type: trajectory.SpanLLM,
-			Name: a.Name,
+			Type:  trajectory.SpanLLM,
+			Name:  a.Name,
+			Model: ctx.modelName(a.Model),
 		}
 		if err := ctx.startSpan(reqSpan); err != nil {
 			return "", nil, err
@@ -167,12 +188,15 @@ func (a *LLMAgent) chat(ctx *Context, cfg *genai.GenerateContentConfig, tools ma
 		if err := ctx.finishSpan(reqSpan, respErr); err != nil {
 			return "", nil, err
 		}
+		req = append(req, resp.Candidates[0].Content)
 		if len(calls) == 0 {
 			// This is the final reply.
-			if a.Outputs != nil && outputs == nil {
-				return "", nil, fmt.Errorf("LLM did not call tool to set outputs")
+			if a.Outputs == nil || outputs != nil {
+				return reply, outputs, nil
 			}
-			return reply, outputs, nil
+			// LLM did not call set-results.
+			req = append(req, genai.NewContentFromText(llmMissingOutputs, genai.RoleUser))
+			continue
 		}
 		// This is not the final reply, LLM asked to execute some tools.
 		// Append the current reply, and tool responses to the next request.
@@ -180,17 +204,19 @@ func (a *LLMAgent) chat(ctx *Context, cfg *genai.GenerateContentConfig, tools ma
 		if err != nil {
 			return "", nil, err
 		}
-		if outputs != nil && outputs1 != nil {
-			return "", nil, fmt.Errorf("LLM called outputs tool twice")
-		}
+		// Overwrite previous outputs, if LLM calls the tool more than once.
+		// It shouldn't, but this seems to be the easiest way to handle it gracefully.
 		outputs = outputs1
-		req = append(req, resp.Candidates[0].Content, responses)
+		req = append(req, responses)
 	}
 }
 
 func (a *LLMAgent) config(ctx *Context) (*genai.GenerateContentConfig, string, map[string]Tool) {
 	instruction := formatTemplate(a.Instruction, ctx.state)
 	toolList := a.Tools
+	if len(toolList) != 0 {
+		instruction += llmMultipleToolsInstruction
+	}
 	if a.Outputs != nil {
 		instruction += llmOutputsInstruction
 		toolList = append(toolList, a.Outputs.tool)
@@ -218,16 +244,36 @@ func (a *LLMAgent) callTools(ctx *Context, tools map[string]Tool, calls []*genai
 	}
 	var outputs map[string]any
 	for _, call := range calls {
+		appendPart := func(results map[string]any) {
+			responses.Parts = append(responses.Parts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
+					ID:       call.ID,
+					Name:     call.Name,
+					Response: results,
+				},
+			})
+		}
+		appendError := func(message string) {
+			appendPart(map[string]any{"error": message})
+		}
 		tool := tools[call.Name]
 		if tool == nil {
-			return nil, nil, fmt.Errorf("no tool %q", call.Name)
+			appendError(fmt.Sprintf("tool %q does not exist, please correct the name", call.Name))
+			continue
 		}
 		results, err := tool.execute(ctx, call.Args)
 		if err != nil {
-			return nil, nil, err
+			// LLM provided wrong arguments to the tool,
+			// or the tool returned error message to the LLM.
+			// Return the error back to the LLM instead of failing.
+			if callErr := new(badCallError); errors.As(err, &callErr) {
+				appendError(err.Error())
+				continue
+			}
+			return nil, nil, fmt.Errorf("tool %v failed: error: %w\nargs: %+v",
+				call.Name, err, call.Args)
 		}
-		responses.Parts = append(responses.Parts, genai.NewPartFromFunctionResponse(call.Name, results))
-		responses.Parts[len(responses.Parts)-1].FunctionResponse.ID = call.ID
+		appendPart(results)
 		if a.Outputs != nil && tool == a.Outputs.tool {
 			outputs = results
 		}
@@ -277,8 +323,9 @@ func (a *LLMAgent) parseResponse(resp *genai.GenerateContentResponse) (
 func (a *LLMAgent) generateContent(ctx *Context, cfg *genai.GenerateContentConfig,
 	req []*genai.Content) (*genai.GenerateContentResponse, error) {
 	backoff := time.Second
+	model := ctx.modelName(a.Model)
 	for try := 0; ; try++ {
-		resp, err := ctx.generateContent(cfg, req)
+		resp, err := ctx.generateContent(model, cfg, req)
 		var apiErr genai.APIError
 		if err != nil && try < 100 && errors.As(err, &apiErr) &&
 			apiErr.Code == http.StatusServiceUnavailable {
@@ -286,12 +333,18 @@ func (a *LLMAgent) generateContent(ctx *Context, cfg *genai.GenerateContentConfi
 			backoff = min(backoff+time.Second, 10*time.Second)
 			continue
 		}
+		if err != nil && errors.As(err, &apiErr) && apiErr.Code == http.StatusTooManyRequests &&
+			strings.Contains(apiErr.Message, "Quota exceeded for metric") &&
+			strings.Contains(apiErr.Message, "generate_requests_per_model_per_day") {
+			return resp, &modelQuotaError{model}
+		}
 		return resp, err
 	}
 }
 
 func (a *LLMAgent) verify(vctx *verifyContext) {
 	vctx.requireNotEmpty(a.Name, "Name", a.Name)
+	vctx.requireNotEmpty(a.Name, "Model", a.Model)
 	vctx.requireNotEmpty(a.Name, "Reply", a.Reply)
 	if temp, ok := a.Temperature.(int); ok {
 		a.Temperature = float32(temp)

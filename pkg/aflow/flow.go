@@ -5,6 +5,8 @@ package aflow
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/google/syzkaller/pkg/aflow/ai"
 )
@@ -22,10 +24,10 @@ import (
 // Actions are nodes of the graph, and they consume/produce some named values
 // (input/output fields, and intermediate values consumed by other actions).
 type Flow struct {
-	Name  string // Empty for the main workflow for the workflow type.
-	Model string // The default Gemini model name to execute this workflow.
-	Root  Action
+	Name string // Empty for the main workflow for the workflow type.
+	Root Action
 
+	Models []string // LLM models used in this workflow.
 	*FlowType
 }
 
@@ -35,12 +37,6 @@ type FlowType struct {
 	checkInputs    func(map[string]any) error
 	extractOutputs func(map[string]any) map[string]any
 }
-
-// See https://ai.google.dev/gemini-api/docs/models
-const (
-	BestExpensiveModel = "gemini-3-pro-preview"
-	GoodBalancedModel  = "gemini-3-flash-preview"
-)
 
 var Flows = make(map[string]*Flow)
 
@@ -61,12 +57,12 @@ func register[Inputs, Outputs any](typ ai.WorkflowType, description string,
 		Type:        typ,
 		Description: description,
 		checkInputs: func(inputs map[string]any) error {
-			_, err := convertFromMap[Inputs](inputs, false)
+			_, err := convertFromMap[Inputs](inputs, false, false)
 			return err
 		},
 		extractOutputs: func(state map[string]any) map[string]any {
 			// Ensure that we actually have all outputs.
-			tmp, err := convertFromMap[Outputs](state, false)
+			tmp, err := convertFromMap[Outputs](state, false, false)
 			if err != nil {
 				panic(err)
 			}
@@ -94,14 +90,16 @@ func registerOne[Inputs, Outputs any](all map[string]*Flow, flow *Flow) error {
 	ctx := &verifyContext{
 		actions: make(map[string]bool),
 		state:   make(map[string]*varState),
+		models:  make(map[string]bool),
 	}
-	ctx.requireNotEmpty(flow.Name, "Model", flow.Model)
 	provideOutputs[Inputs](ctx, "flow inputs")
 	flow.Root.verify(ctx)
 	requireInputs[Outputs](ctx, "flow outputs")
 	if err := ctx.finalize(); err != nil {
 		return fmt.Errorf("flow %v: %w", flow.Name, err)
 	}
+	flow.Models = slices.Collect(maps.Keys(ctx.models))
+	slices.Sort(flow.Models)
 	all[flow.Name] = flow
 	return nil
 }

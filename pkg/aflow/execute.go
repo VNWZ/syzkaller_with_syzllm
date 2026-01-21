@@ -20,7 +20,8 @@ import (
 )
 
 // Execute executes the given AI workflow with provided inputs and returns workflow outputs.
-// The model argument sets Gemini model name to execute the workflow.
+// The model argument overrides Gemini models used to execute LLM agents,
+// if not set, then default models for each agent are used.
 // The workdir argument should point to a dir owned by aflow to store private data,
 // it can be shared across parallel executions in the same process, and preferably
 // preserved across process restarts for caching purposes.
@@ -30,11 +31,12 @@ func (flow *Flow) Execute(c context.Context, model, workdir string, inputs map[s
 		return nil, fmt.Errorf("flow inputs are missing: %w", err)
 	}
 	ctx := &Context{
-		Context: c,
-		Workdir: osutil.Abs(workdir),
-		cache:   cache,
-		state:   maps.Clone(inputs),
-		onEvent: onEvent,
+		Context:  c,
+		Workdir:  osutil.Abs(workdir),
+		llmModel: model,
+		cache:    cache,
+		state:    maps.Clone(inputs),
+		onEvent:  onEvent,
 	}
 	defer ctx.close()
 	if s := c.Value(stubContextKey); s != nil {
@@ -44,11 +46,7 @@ func (flow *Flow) Execute(c context.Context, model, workdir string, inputs map[s
 		ctx.timeNow = time.Now
 	}
 	if ctx.generateContent == nil {
-		var err error
-		ctx.generateContent, err = contentGenerator(c, model)
-		if err != nil {
-			return nil, err
-		}
+		ctx.generateContent = ctx.generateContentGemini
 	}
 	span := &trajectory.Span{
 		Type: trajectory.SpanFlow,
@@ -90,10 +88,54 @@ type flowError struct {
 	error
 }
 
+func IsModelQuotaError(err error) string {
+	var quotaErr *modelQuotaError
+	if errors.As(err, &quotaErr) {
+		return quotaErr.model
+	}
+	return ""
+}
+
+type modelQuotaError struct {
+	model string
+}
+
+func (err *modelQuotaError) Error() string {
+	return fmt.Sprintf("model %q is over daily quota", err.model)
+}
+
+// QuotaResetTime returns the time when RPD quota will be reset
+// for a quota overflow happened at time t.
+func QuotaResetTime(t time.Time) time.Time {
+	// Requests per day (RPD) quotas reset at midnight Pacific time:
+	// https://ai.google.dev/gemini-api/docs/rate-limits
+	// To account for potential delays in the reset logic, we add small delta (5 mins)
+	// to that to avoid situation when we reset it at exactly midnight locally,
+	// but it's not reset on the server yet.
+	// The assumption is also that any rate limiting errors in the very beginning
+	// of the day (within first seconds/minutes), actually belong to the previous day
+	// (we couldn't overflow the quota within that period).
+	t = t.In(pacificLoc)
+	resetTime := time.Date(t.Year(), t.Month(), t.Day(), 0, 5, 0, 0, pacificLoc)
+	if t.After(resetTime) {
+		resetTime = resetTime.Add(24 * time.Hour)
+		if t.After(resetTime) {
+			panic(fmt.Sprintf("%v > %v", t, resetTime))
+		}
+	}
+	return resetTime.UTC()
+}
+
+var pacificLoc = func() *time.Location {
+	loc, err := time.LoadLocation("US/Pacific")
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}()
+
 type (
-	onEvent             func(*trajectory.Span) error
-	generateContentFunc func(*genai.GenerateContentConfig, []*genai.Content) (
-		*genai.GenerateContentResponse, error)
+	onEvent        func(*trajectory.Span) error
 	contextKeyType int
 )
 
@@ -105,7 +147,8 @@ var (
 	stubContextKey   = contextKeyType(1)
 )
 
-func contentGenerator(ctx context.Context, model string) (generateContentFunc, error) {
+func (ctx *Context) generateContentGemini(model string, cfg *genai.GenerateContentConfig,
+	req []*genai.Content) (*genai.GenerateContentResponse, error) {
 	const modelPrefix = "models/"
 	createClientOnce.Do(func() {
 		if os.Getenv("GOOGLE_API_KEY") == "" {
@@ -113,11 +156,11 @@ func contentGenerator(ctx context.Context, model string) (generateContentFunc, e
 				" (see https://ai.google.dev/gemini-api/docs/api-key)")
 			return
 		}
-		client, createClientErr = genai.NewClient(ctx, nil)
+		client, createClientErr = genai.NewClient(ctx.Context, nil)
 		if createClientErr != nil {
 			return
 		}
-		for m, err := range client.Models.All(ctx) {
+		for m, err := range client.Models.All(ctx.Context) {
 			if err != nil {
 				createClientErr = err
 				return
@@ -134,25 +177,24 @@ func contentGenerator(ctx context.Context, model string) (generateContentFunc, e
 		slices.Sort(models)
 		return nil, fmt.Errorf("model %q does not exist (models: %v)", model, models)
 	}
-	return func(cfg *genai.GenerateContentConfig, req []*genai.Content) (*genai.GenerateContentResponse, error) {
-		if thinking {
-			cfg.ThinkingConfig = &genai.ThinkingConfig{
-				// We capture them in the trajectory for analysis.
-				IncludeThoughts: true,
-				// Enable "dynamic thinking" ("the model will adjust the budget based on the complexity of the request").
-				// See https://ai.google.dev/gemini-api/docs/thinking#set-budget
-				// However, thoughts output also consumes total output token budget.
-				// We may consider adjusting ThinkingLevel parameter.
-				ThinkingBudget: genai.Ptr[int32](-1),
-			}
+	if thinking {
+		cfg.ThinkingConfig = &genai.ThinkingConfig{
+			// We capture them in the trajectory for analysis.
+			IncludeThoughts: true,
+			// Enable "dynamic thinking" ("the model will adjust the budget based on the complexity of the request").
+			// See https://ai.google.dev/gemini-api/docs/thinking#set-budget
+			// However, thoughts output also consumes total output token budget.
+			// We may consider adjusting ThinkingLevel parameter.
+			ThinkingBudget: genai.Ptr[int32](-1),
 		}
-		return client.Models.GenerateContent(ctx, modelPrefix+model, req, cfg)
-	}, nil
+	}
+	return client.Models.GenerateContent(ctx.Context, modelPrefix+model, req, cfg)
 }
 
 type Context struct {
 	Context     context.Context
 	Workdir     string
+	llmModel    string
 	cache       *Cache
 	cachedDirs  []string
 	state       map[string]any
@@ -164,7 +206,15 @@ type Context struct {
 
 type stubContext struct {
 	timeNow         func() time.Time
-	generateContent generateContentFunc
+	generateContent func(string, *genai.GenerateContentConfig, []*genai.Content) (
+		*genai.GenerateContentResponse, error)
+}
+
+func (ctx *Context) modelName(model string) string {
+	if ctx.llmModel != "" {
+		return ctx.llmModel
+	}
+	return model
 }
 
 func (ctx *Context) Cache(typ, desc string, populate func(string) error) (string, error) {

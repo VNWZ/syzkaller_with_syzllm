@@ -5,11 +5,15 @@ package codesearch
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 
+	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/osutil"
 )
 
@@ -26,10 +30,29 @@ type Command struct {
 
 // Commands are used to run unit tests and for the syz-codesearch tool.
 var Commands = []Command{
+	{"dir-index", 1, func(index *Index, args []string) (string, error) {
+		subdirs, files, err := index.DirIndex(args[0])
+		if err != nil {
+			return "", err
+		}
+		b := new(strings.Builder)
+		fmt.Fprintf(b, "directory %v subdirs:\n", args[0])
+		for _, subdir := range subdirs {
+			fmt.Fprintf(b, " - %v\n", subdir)
+		}
+		fmt.Fprintf(b, "\ndirectory %v files:\n", args[0])
+		for _, file := range files {
+			fmt.Fprintf(b, " - %v\n", file)
+		}
+		return b.String(), nil
+	}},
+	{"read-file", 1, func(index *Index, args []string) (string, error) {
+		return index.ReadFile(args[0])
+	}},
 	{"file-index", 1, func(index *Index, args []string) (string, error) {
-		ok, entities, err := index.FileIndex(args[0])
-		if err != nil || !ok {
-			return notFound, err
+		entities, err := index.FileIndex(args[0])
+		if err != nil {
+			return "", err
 		}
 		b := new(strings.Builder)
 		fmt.Fprintf(b, "file %v defines the following entities:\n\n", args[0])
@@ -40,8 +63,8 @@ var Commands = []Command{
 	}},
 	{"def-comment", 2, func(index *Index, args []string) (string, error) {
 		info, err := index.DefinitionComment(args[0], args[1])
-		if err != nil || info == nil {
-			return notFound, err
+		if err != nil {
+			return "", err
 		}
 		if info.Body == "" {
 			return fmt.Sprintf("%v %v is defined in %v and is not commented\n",
@@ -52,14 +75,24 @@ var Commands = []Command{
 	}},
 	{"def-source", 3, func(index *Index, args []string) (string, error) {
 		info, err := index.DefinitionSource(args[0], args[1], args[2] == "yes")
-		if err != nil || info == nil {
-			return notFound, err
+		if err != nil {
+			return "", err
 		}
 		return fmt.Sprintf("%v %v is defined in %v:\n\n%v", info.Kind, args[1], info.File, info.Body), nil
 	}},
 }
 
-const notFound = "not found\n"
+func IsSourceFile(file string) bool {
+	return sourceFiles[file] || sourceExtensions[filepath.Ext(file)]
+}
+
+var (
+	// Files and extensions we want to keep in the build dir and make available to LLM agents.
+	sourceExtensions = map[string]bool{".c": true, ".h": true, ".S": true, ".rs": true}
+	sourceFiles      = map[string]bool{
+		".config": true,
+	}
+)
 
 func NewIndex(databaseFile string, srcDirs []string) (*Index, error) {
 	db, err := osutil.ReadJSON[*Database](databaseFile)
@@ -90,7 +123,62 @@ type Entity struct {
 	Name string
 }
 
-func (index *Index) FileIndex(file string) (bool, []Entity, error) {
+func (index *Index) DirIndex(dir string) ([]string, []string, error) {
+	if err := escaping(dir); err != nil {
+		return nil, nil, err
+	}
+	exists := false
+	var subdirs, files []string
+	for _, root := range index.srcDirs {
+		exists1, subdirs1, files1, err := dirIndex(root, dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if exists1 {
+			exists = true
+		}
+		subdirs = append(subdirs, subdirs1...)
+		files = append(files, files1...)
+	}
+	if !exists {
+		return nil, nil, aflow.BadCallError("the directory does not exist")
+	}
+	slices.Sort(subdirs)
+	slices.Sort(files)
+	// Dedup dirs across src/build trees,
+	// also dedup files, but hopefully there are no duplicates.
+	subdirs = slices.Compact(subdirs)
+	files = slices.Compact(files)
+	return subdirs, files, nil
+}
+
+func (index *Index) ReadFile(file string) (string, error) {
+	if err := escaping(file); err != nil {
+		return "", err
+	}
+	for _, dir := range index.srcDirs {
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			var errno syscall.Errno
+			if errors.As(err, &errno) && errno == syscall.EISDIR {
+				return "", aflow.BadCallError("the file is a directory")
+			}
+			return "", err
+		}
+		return string(data), nil
+	}
+	return "", aflow.BadCallError("the file does not exist")
+}
+
+func (index *Index) FileIndex(file string) ([]Entity, error) {
+	file = filepath.Clean(file)
+	// This allows to distinguish missing files from files that don't define anything.
+	if _, err := index.ReadFile(file); err != nil {
+		return nil, err
+	}
 	var entities []Entity
 	for _, def := range index.db.Definitions {
 		if def.Body.File == file {
@@ -100,7 +188,7 @@ func (index *Index) FileIndex(file string) (bool, []Entity, error) {
 			})
 		}
 	}
-	return len(entities) != 0, entities, nil
+	return entities, nil
 }
 
 type EntityInfo struct {
@@ -120,7 +208,7 @@ func (index *Index) DefinitionSource(contextFile, name string, includeLines bool
 func (index *Index) definitionSource(contextFile, name string, comment, includeLines bool) (*EntityInfo, error) {
 	def := index.findDefinition(contextFile, name)
 	if def == nil {
-		return nil, nil
+		return nil, aflow.BadCallError("requested entity does not exist")
 	}
 	lineRange := def.Body
 	if comment {
@@ -187,4 +275,38 @@ func formatSourceFile(file string, start, end int, includeLines bool) (string, e
 		}
 	}
 	return b.String(), nil
+}
+
+func escaping(path string) error {
+	if strings.Contains(filepath.Clean(path), "..") {
+		return aflow.BadCallError("path is outside of the source tree")
+	}
+	return nil
+}
+
+func dirIndex(root, subdir string) (bool, []string, []string, error) {
+	subdir = filepath.Clean(subdir)
+	dir := filepath.Join(root, subdir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		var errno syscall.Errno
+		if errors.As(err, &errno) && errno == syscall.ENOTDIR {
+			err = aflow.BadCallError("the path is not a directory")
+		}
+		return false, nil, nil, err
+	}
+	var subdirs, files []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			// These are internal things like .git, etc.
+		} else if entry.IsDir() {
+			subdirs = append(subdirs, entry.Name())
+		} else if IsSourceFile(filepath.Join(subdir, entry.Name())) {
+			files = append(files, entry.Name())
+		}
+	}
+	return true, subdirs, files, err
 }

@@ -14,6 +14,14 @@ import (
 )
 
 var Tools = []aflow.Tool{
+	aflow.NewFuncTool("codesearch-dir-index", dirIndex, `
+Tool provides list of source files and subdirectories in the given directory in the source tree.
+`),
+	aflow.NewFuncTool("read-file", readFile, `
+Tool provides full contents of a single source file as is. Avoid using this tool if there are better
+and more specialized tools for the job, because source files may be large and contain lots
+of unrelated information.
+`),
 	aflow.NewFuncTool("codesearch-file-index", fileIndex, `
 Tool provides list of entities defined in the given source file.
 Entity can be function, struct, or global variable.
@@ -54,12 +62,29 @@ type prepareResult struct {
 	Index index
 }
 
+// nolint: lll
+type dirIndexArgs struct {
+	Dir string `jsonschema:"Relative directory in the source tree. Use an empty string for the root of the tree, or paths like 'net/ipv4/' for subdirs."`
+}
+
+type dirIndexResult struct {
+	Subdirs []string `jsonschema:"List of direct subdirectories."`
+	Files   []string `jsonschema:"List of source files."`
+}
+
+type readFileArgs struct {
+	File string `jsonschema:"Source file path."`
+}
+
+type readFileResult struct {
+	Contents string `jsonschema:"File contents."`
+}
+
 type fileIndexArgs struct {
 	SourceFile string `jsonschema:"Source file path."`
 }
 
 type fileIndexResult struct {
-	Missing  bool          `jsonschema:"Set to true if the file with the given name does not exist."`
 	Entities []indexEntity `jsonschema:"List of entites defined in the file."`
 }
 
@@ -75,7 +100,6 @@ type defCommentArgs struct {
 }
 
 type defCommentResult struct {
-	Missing bool   `jsonschema:"Set to true if the entity with the given name does not exist."`
 	Kind    string `jsonschema:"Kind of the entity: function, struct, variable."`
 	Comment string `jsonschema:"Source comment for the entity."`
 }
@@ -89,7 +113,6 @@ type defSourceArgs struct {
 
 // nolint: lll
 type defSourceResult struct {
-	Missing    bool   `jsonschema:"Set to true if the entity with the given name does not exist."`
 	SourceFile string `jsonschema:"Source file path where the entity is defined."`
 	SourceCode string `jsonschema:"Source code of the entity definition. It is prefixed with line numbers, so that they can be referenced in other tool invocations."`
 }
@@ -130,11 +153,24 @@ func prepare(ctx *aflow.Context, args prepareArgs) (prepareResult, error) {
 	return prepareResult{index{csIndex}}, err
 }
 
+func dirIndex(ctx *aflow.Context, state prepareResult, args dirIndexArgs) (dirIndexResult, error) {
+	subdirs, files, err := state.Index.DirIndex(args.Dir)
+	return dirIndexResult{
+		Subdirs: subdirs,
+		Files:   files,
+	}, err
+}
+
+func readFile(ctx *aflow.Context, state prepareResult, args readFileArgs) (readFileResult, error) {
+	contents, err := state.Index.ReadFile(args.File)
+	return readFileResult{
+		Contents: contents,
+	}, err
+}
+
 func fileIndex(ctx *aflow.Context, state prepareResult, args fileIndexArgs) (fileIndexResult, error) {
-	ok, entities, err := state.Index.FileIndex(args.SourceFile)
-	res := fileIndexResult{
-		Missing: !ok,
-	}
+	entities, err := state.Index.FileIndex(args.SourceFile)
+	res := fileIndexResult{}
 	for _, ent := range entities {
 		res.Entities = append(res.Entities, indexEntity{
 			Kind: ent.Kind,
@@ -146,10 +182,8 @@ func fileIndex(ctx *aflow.Context, state prepareResult, args fileIndexArgs) (fil
 
 func definitionComment(ctx *aflow.Context, state prepareResult, args defCommentArgs) (defCommentResult, error) {
 	info, err := state.Index.DefinitionComment(args.SourceFile, args.Name)
-	if err != nil || info == nil {
-		return defCommentResult{
-			Missing: info == nil,
-		}, err
+	if err != nil {
+		return defCommentResult{}, err
 	}
 	return defCommentResult{
 		Kind:    info.Kind,
@@ -159,10 +193,8 @@ func definitionComment(ctx *aflow.Context, state prepareResult, args defCommentA
 
 func definitionSource(ctx *aflow.Context, state prepareResult, args defSourceArgs) (defSourceResult, error) {
 	info, err := state.Index.DefinitionSource(args.SourceFile, args.Name, args.IncludeLines)
-	if err != nil || info == nil {
-		return defSourceResult{
-			Missing: info == nil,
-		}, err
+	if err != nil {
+		return defSourceResult{}, err
 	}
 	return defSourceResult{
 		SourceFile: info.File,

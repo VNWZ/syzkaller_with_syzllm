@@ -4,6 +4,8 @@
 package aflow
 
 import (
+	"errors"
+
 	"github.com/google/syzkaller/pkg/aflow/trajectory"
 	"google.golang.org/genai"
 )
@@ -24,6 +26,17 @@ func NewFuncTool[State, Args, Results any](name string, fn func(*Context, State,
 	}
 }
 
+// BadCallError creates an error that means that LLM made a bad tool call,
+// the provided message will be returned to the LLM as an error,
+// instead of failing the whole workflow.
+func BadCallError(message string) error {
+	return &badCallError{errors.New(message)}
+}
+
+type badCallError struct {
+	error
+}
+
 type funcTool[State, Args, Results any] struct {
 	Name        string
 	Description string
@@ -40,11 +53,17 @@ func (t *funcTool[State, Args, Results]) declaration() *genai.FunctionDeclaratio
 }
 
 func (t *funcTool[State, Args, Results]) execute(ctx *Context, args map[string]any) (map[string]any, error) {
-	state, err := convertFromMap[State](ctx.state, false)
+	state, err := convertFromMap[State](ctx.state, false, false)
 	if err != nil {
 		return nil, err
 	}
-	a, err := convertFromMap[Args](args, true)
+	// We parse args in non-strict mode too.
+	// LLM shouldn't provide excessive args, but they are known to mess up things
+	// in all possible ways occasionally. Generally we want to handle such cases
+	// in some way, rather than fail the whole workflow. We could reply to it
+	// with an error about this, but it's unclear if the additional round-trip
+	// worth it, it already provided all the actual arguments.
+	a, err := convertFromMap[Args](args, false, true)
 	if err != nil {
 		return nil, err
 	}
