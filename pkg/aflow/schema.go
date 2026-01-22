@@ -9,6 +9,7 @@ import (
 	"iter"
 	"maps"
 	"reflect"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -18,11 +19,8 @@ func schemaFor[T any]() (*jsonschema.Schema, error) {
 	if typ.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("%v is not a struct", typ.Name())
 	}
-	for _, field := range reflect.VisibleFields(typ) {
-		if field.Tag.Get("jsonschema") == "" {
-			return nil, fmt.Errorf("%v.%v does not have a jsonschema tag with description",
-				typ.Name(), field.Name)
-		}
+	if err := checkSchemaType(typ); err != nil {
+		return nil, err
 	}
 	schema, err := jsonschema.For[T](nil)
 	if err != nil {
@@ -33,6 +31,28 @@ func schemaFor[T any]() (*jsonschema.Schema, error) {
 		return nil, err
 	}
 	return resolved.Schema(), nil
+}
+
+func checkSchemaType(typ reflect.Type) error {
+	if typ.Kind() != reflect.Struct {
+		return nil
+	}
+	for _, field := range reflect.VisibleFields(typ) {
+		if field.Tag.Get("jsonschema") == "" {
+			return fmt.Errorf("%v.%v does not have a jsonschema tag with description",
+				typ.Name(), field.Name)
+		}
+		if err := checkSchemaType(field.Type); err != nil {
+			return err
+		}
+		switch field.Type.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array:
+			if err := checkSchemaType(field.Type.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func mustSchemaFor[T any]() *jsonschema.Schema {
@@ -62,6 +82,10 @@ func convertFromMap[T any](m map[string]any, strict, tool bool) (T, error) {
 	for name, field := range foreachField(&val) {
 		f, ok := m[name]
 		if !ok {
+			fieldType, _ := reflect.TypeFor[T]().FieldByName(name)
+			if strings.Contains(fieldType.Tag.Get("json"), ",omitempty") {
+				continue
+			}
 			if tool {
 				return val, BadCallError(fmt.Sprintf("missing argument %q", name))
 			} else {
@@ -69,14 +93,30 @@ func convertFromMap[T any](m map[string]any, strict, tool bool) (T, error) {
 			}
 		}
 		delete(m, name)
+		fType, fValue := reflect.TypeOf(f), reflect.ValueOf(f)
 		if mm, ok := f.(map[string]any); ok && field.Type() == reflect.TypeFor[json.RawMessage]() {
 			raw, err := json.Marshal(mm)
 			if err != nil {
 				return val, err
 			}
 			field.Set(reflect.ValueOf(json.RawMessage(raw)))
-		} else if field.Type() == reflect.TypeOf(f) {
-			field.Set(reflect.ValueOf(f))
+		} else if fType.Kind() == reflect.Float64 &&
+			(field.CanInt() || field.CanUint()) {
+			// Genai will send us integers as float64 after json conversion,
+			// so convert them back to ints.
+			iv := fValue.Convert(field.Type())
+			if fv := iv.Convert(fType); !fValue.Equal(fv) {
+				if tool {
+					return val, BadCallError(fmt.Sprintf("argument %v: float value truncated from %v to %v",
+						name, f, iv.Interface()))
+				} else {
+					return val, fmt.Errorf("field %v: float value truncated from %v to %v",
+						name, f, iv.Interface())
+				}
+			}
+			field.Set(iv)
+		} else if field.Type() == fType {
+			field.Set(fValue)
 		} else {
 			if tool {
 				return val, BadCallError(fmt.Sprintf("argument %q has wrong type: got %T, want %v",

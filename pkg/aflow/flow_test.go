@@ -213,7 +213,10 @@ func TestWorkflow(t *testing.T) {
 							Name: "tool1",
 							Args: map[string]any{
 								"ArgFoo": "arg-foo",
-								"ArgBar": 100,
+								// Genai package will give us ints as float64
+								// b/c they pass via json unmarshalling.
+								// Test how we handle that.
+								"ArgBar": float64(100),
 							},
 						},
 					},
@@ -222,7 +225,7 @@ func TestWorkflow(t *testing.T) {
 							ID:   "id1",
 							Name: "tool2",
 							Args: map[string]any{
-								"ArgBaz": 101,
+								"ArgBaz": 101.0,
 							},
 						},
 					},
@@ -262,7 +265,7 @@ func TestWorkflow(t *testing.T) {
 							ID:   "id2",
 							Name: "set-results",
 							Args: map[string]any{
-								"AgentFoo": 42,
+								"AgentFoo": 42.0,
 								"AgentBar": "agent-bar",
 							},
 						},
@@ -291,8 +294,6 @@ func TestWorkflow(t *testing.T) {
 					},
 				}}
 
-			// dupl considers makeSwarmReply/makeSwarmResp duplicates
-			// nolint:dupl
 			makeSwarmReply := func(index int) *genai.Content {
 				return &genai.Content{
 					Role: string(genai.RoleModel),
@@ -302,14 +303,13 @@ func TestWorkflow(t *testing.T) {
 								ID:   fmt.Sprintf("id%v", index),
 								Name: "set-results",
 								Args: map[string]any{
-									"SwarmInt": index,
+									"SwarmInt": float64(index),
 									"SwarmStr": fmt.Sprintf("swarm%v", index),
 								},
 							},
 						},
 					}}
 			}
-			// nolint:dupl // dupl considers makeSwarmReply/makeSwarmResp duplicates
 			makeSwarmResp := func(index int) *genai.Content {
 				return &genai.Content{
 					Role: string(genai.RoleUser),
@@ -407,7 +407,7 @@ func TestWorkflow(t *testing.T) {
 	}
 	ctx := context.WithValue(context.Background(), stubContextKey, stub)
 	workdir := t.TempDir()
-	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, stub.timeNow)
+	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, time.Now)
 	require.NoError(t, err)
 	// nolint: dupl
 	expected := []*trajectory.Span{
@@ -472,7 +472,7 @@ func TestWorkflow(t *testing.T) {
 			Name:    "tool1",
 			Started: startTime.Add(7 * time.Second),
 			Args: map[string]any{
-				"ArgBar": 100,
+				"ArgBar": float64(100),
 				"ArgFoo": "arg-foo",
 			},
 		},
@@ -484,7 +484,7 @@ func TestWorkflow(t *testing.T) {
 			Started:  startTime.Add(7 * time.Second),
 			Finished: startTime.Add(8 * time.Second),
 			Args: map[string]any{
-				"ArgBar": 100,
+				"ArgBar": float64(100),
 				"ArgFoo": "arg-foo",
 			},
 			Results: map[string]any{
@@ -499,7 +499,7 @@ func TestWorkflow(t *testing.T) {
 			Name:    "tool2",
 			Started: startTime.Add(9 * time.Second),
 			Args: map[string]any{
-				"ArgBaz": 101,
+				"ArgBaz": 101.0,
 			},
 		},
 		{
@@ -510,7 +510,7 @@ func TestWorkflow(t *testing.T) {
 			Started:  startTime.Add(9 * time.Second),
 			Finished: startTime.Add(10 * time.Second),
 			Args: map[string]any{
-				"ArgBaz": 101,
+				"ArgBaz": 101.0,
 			},
 			Results: map[string]any{
 				"ResBaz": 300,
@@ -542,7 +542,7 @@ func TestWorkflow(t *testing.T) {
 			Started: startTime.Add(13 * time.Second),
 			Args: map[string]any{
 				"AgentBar": "agent-bar",
-				"AgentFoo": 42,
+				"AgentFoo": 42.0,
 			},
 		},
 		{
@@ -554,7 +554,7 @@ func TestWorkflow(t *testing.T) {
 			Finished: startTime.Add(14 * time.Second),
 			Args: map[string]any{
 				"AgentBar": "agent-bar",
-				"AgentFoo": 42,
+				"AgentFoo": 42.0,
 			},
 			Results: map[string]any{
 				"AgentBar": "agent-bar",
@@ -653,7 +653,7 @@ func TestWorkflow(t *testing.T) {
 			Name:    "set-results",
 			Started: startTime.Add(24 * time.Second),
 			Args: map[string]any{
-				"SwarmInt": 1,
+				"SwarmInt": 1.0,
 				"SwarmStr": "swarm1",
 			},
 		},
@@ -665,7 +665,7 @@ func TestWorkflow(t *testing.T) {
 			Started:  startTime.Add(24 * time.Second),
 			Finished: startTime.Add(25 * time.Second),
 			Args: map[string]any{
-				"SwarmInt": 1,
+				"SwarmInt": 1.0,
 				"SwarmStr": "swarm1",
 			},
 			Results: map[string]any{
@@ -740,7 +740,7 @@ func TestWorkflow(t *testing.T) {
 			Name:    "set-results",
 			Started: startTime.Add(32 * time.Second),
 			Args: map[string]any{
-				"SwarmInt": 2,
+				"SwarmInt": 2.0,
 				"SwarmStr": "swarm2",
 			},
 		},
@@ -752,7 +752,7 @@ func TestWorkflow(t *testing.T) {
 			Started:  startTime.Add(32 * time.Second),
 			Finished: startTime.Add(33 * time.Second),
 			Args: map[string]any{
-				"SwarmInt": 2,
+				"SwarmInt": 2.0,
 				"SwarmStr": "swarm2",
 			},
 			Results: map[string]any{
@@ -962,7 +962,7 @@ func TestToolMisbehavior(t *testing.T) {
 			Root: NewPipeline(
 				&LLMAgent{
 					Name:        "smarty",
-					Model:       "model1",
+					Model:       "model",
 					Temperature: 1,
 					Reply:       "Reply",
 
@@ -970,7 +970,7 @@ func TestToolMisbehavior(t *testing.T) {
 						AdditionalOutput int `jsonschema:"arg"`
 					}](),
 					Instruction: "Do something!",
-					Prompt:      "Data",
+					Prompt:      "Prompt",
 					Tools: []Tool{
 						NewFuncTool("tool1", func(ctx *Context, state struct{}, args tool1Args) (struct{}, error) {
 							return struct{}{}, nil
@@ -1020,7 +1020,6 @@ func TestToolMisbehavior(t *testing.T) {
 								FunctionCall: &genai.FunctionCall{
 									ID:   "id3",
 									Name: "tool2",
-									Args: map[string]any{},
 								},
 							},
 							// Excessive argument.
@@ -1029,8 +1028,8 @@ func TestToolMisbehavior(t *testing.T) {
 									ID:   "id4",
 									Name: "tool2",
 									Args: map[string]any{
-										"Tool2Arg":  0,
-										"Tool2Arg2": 100,
+										"Tool2Arg":  0.0,
+										"Tool2Arg2": 100.0,
 									},
 								},
 							},
@@ -1162,15 +1161,275 @@ func TestToolMisbehavior(t *testing.T) {
 				return nil, nil
 			}
 		},
+		timeNow: func() time.Time {
+			var zero time.Time
+			return zero
+		},
 	}
 	ctx := context.WithValue(context.Background(), stubContextKey, stub)
 	workdir := t.TempDir()
-	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, stub.timeNow)
+	cache, err := newTestCache(t, filepath.Join(workdir, "cache"), 0, time.Now)
 	require.NoError(t, err)
-	onEvent := func(span *trajectory.Span) error { return nil }
+	expected := []*trajectory.Span{
+		{
+			Seq:     0,
+			Nesting: 0,
+			Type:    trajectory.SpanFlow,
+			Name:    "test-flow",
+		},
+		{
+			Seq:         1,
+			Nesting:     1,
+			Type:        trajectory.SpanAgent,
+			Name:        "smarty",
+			Model:       "model",
+			Instruction: "Do something!" + llmMultipleToolsInstruction + llmOutputsInstruction,
+			Prompt:      "Prompt",
+		},
+		{
+			Seq:     2,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     2,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     3,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool1",
+			Args: map[string]any{
+				"Tool1Arg": "string",
+			},
+		},
+		{
+			Seq:     3,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool1",
+			Args: map[string]any{
+				"Tool1Arg": "string",
+			},
+			Results: map[string]any{},
+		},
+		{
+			Seq:     4,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+			Args: map[string]any{
+				"Tool2Arg": "string-instead-of-int",
+			},
+		},
+		{
+			Seq:     4,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+			Args: map[string]any{
+				"Tool2Arg": "string-instead-of-int",
+			},
+			Error: "argument \"Tool2Arg\" has wrong type: got string, want int",
+		},
+		{
+			Seq:     5,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+		},
+		{
+			Seq:     5,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+			Error:   "missing argument \"Tool2Arg\"",
+		},
+		{
+			Seq:     6,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+			Args: map[string]any{
+				"Tool2Arg":  0.0,
+				"Tool2Arg2": 100.0,
+			},
+		},
+		{
+			Seq:     6,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool2",
+			Args: map[string]any{
+				"Tool2Arg":  0.0,
+				"Tool2Arg2": 100.0,
+			},
+			Results: map[string]any{
+				"Result": 42,
+			},
+		},
+		{
+			Seq:     7,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool3",
+			Args: map[string]any{
+				"Arg": 0.0,
+			},
+		},
+		{
+			Seq:     7,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "tool3",
+			Args: map[string]any{
+				"Arg": 0.0,
+			},
+			Error: "tool \"tool3\" does not exist, please correct the name",
+		},
+		{
+			Seq:     8,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"WrongArg": 0.0,
+			},
+		},
+		{
+			Seq:     8,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"WrongArg": 0.0,
+			},
+			Error: "missing argument \"AdditionalOutput\"",
+		},
+		{
+			Seq:     9,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     9,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     10,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     10,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     11,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"AdditionalOutput": 1.0,
+			},
+		},
+		{
+			Seq:     11,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"AdditionalOutput": 1.0,
+			},
+			Results: map[string]any{
+				"AdditionalOutput": 1,
+			},
+		},
+		{
+			Seq:     12,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"AdditionalOutput": 2.0,
+			},
+		},
+		{
+			Seq:     12,
+			Nesting: 2,
+			Type:    trajectory.SpanTool,
+			Name:    "set-results",
+			Args: map[string]any{
+				"AdditionalOutput": 2.0,
+			},
+			Results: map[string]any{
+				"AdditionalOutput": 2,
+			},
+		},
+		{
+			Seq:     13,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:     13,
+			Nesting: 2,
+			Type:    trajectory.SpanLLM,
+			Name:    "smarty",
+			Model:   "model",
+		},
+		{
+			Seq:         1,
+			Nesting:     1,
+			Type:        trajectory.SpanAgent,
+			Name:        "smarty",
+			Model:       "model",
+			Instruction: "Do something!" + llmMultipleToolsInstruction + llmOutputsInstruction,
+			Prompt:      "Prompt",
+			Reply:       "Finally done",
+			Results: map[string]any{
+				"AdditionalOutput": 2,
+			},
+		},
+		{
+			Seq:     0,
+			Nesting: 0,
+			Type:    trajectory.SpanFlow,
+			Name:    "test-flow",
+			Results: map[string]any{
+				"Reply":            "Finally done",
+				"AdditionalOutput": 2,
+			},
+		},
+	}
+	onEvent := func(span *trajectory.Span) error {
+		require.NotEmpty(t, expected, "span: %#v", span)
+		require.Equal(t, span, expected[0])
+		expected = expected[1:]
+		return nil
+	}
 	res, err := flows["test-flow"].Execute(ctx, "", workdir, map[string]any{}, cache, onEvent)
 	require.NoError(t, err)
 	require.Equal(t, replySeq, 4)
+	require.Empty(t, expected)
 	require.Equal(t, res, map[string]any{
 		"Reply":            "Finally done",
 		"AdditionalOutput": 2,

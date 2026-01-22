@@ -25,46 +25,46 @@ import (
 // The workdir argument should point to a dir owned by aflow to store private data,
 // it can be shared across parallel executions in the same process, and preferably
 // preserved across process restarts for caching purposes.
-func (flow *Flow) Execute(c context.Context, model, workdir string, inputs map[string]any,
+func (flow *Flow) Execute(ctx context.Context, model, workdir string, inputs map[string]any,
 	cache *Cache, onEvent onEvent) (map[string]any, error) {
 	if err := flow.checkInputs(inputs); err != nil {
 		return nil, fmt.Errorf("flow inputs are missing: %w", err)
 	}
-	ctx := &Context{
-		Context:  c,
+	c := &Context{
+		Context:  ctx,
 		Workdir:  osutil.Abs(workdir),
 		llmModel: model,
 		cache:    cache,
 		state:    maps.Clone(inputs),
 		onEvent:  onEvent,
 	}
-	defer ctx.close()
-	if s := c.Value(stubContextKey); s != nil {
-		ctx.stubContext = *s.(*stubContext)
+	defer c.close()
+	if s := ctx.Value(stubContextKey); s != nil {
+		c.stubContext = *s.(*stubContext)
 	}
-	if ctx.timeNow == nil {
-		ctx.timeNow = time.Now
+	if c.timeNow == nil {
+		c.timeNow = time.Now
 	}
-	if ctx.generateContent == nil {
-		ctx.generateContent = ctx.generateContentGemini
+	if c.generateContent == nil {
+		c.generateContent = c.generateContentGemini
 	}
 	span := &trajectory.Span{
 		Type: trajectory.SpanFlow,
 		Name: flow.Name,
 	}
-	if err := ctx.startSpan(span); err != nil {
+	if err := c.startSpan(span); err != nil {
 		return nil, err
 	}
-	flowErr := flow.Root.execute(ctx)
+	flowErr := flow.Root.execute(c)
 	if flowErr == nil {
-		span.Results = flow.extractOutputs(ctx.state)
+		span.Results = flow.extractOutputs(c.state)
 	}
-	if err := ctx.finishSpan(span, flowErr); err != nil {
+	if err := c.finishSpan(span, flowErr); err != nil {
 		return nil, err
 	}
-	if ctx.spanNesting != 0 {
+	if c.spanNesting != 0 {
 		// Since we finish all spans, even on errors, we should end up at 0.
-		panic(fmt.Sprintf("unbalanced spans (%v)", ctx.spanNesting))
+		panic(fmt.Sprintf("unbalanced spans (%v)", c.spanNesting))
 	}
 	return span.Results, nil
 }
@@ -178,6 +178,9 @@ func (ctx *Context) generateContentGemini(model string, cfg *genai.GenerateConte
 		return nil, fmt.Errorf("model %q does not exist (models: %v)", model, models)
 	}
 	if thinking {
+		// Don't alter the original object (that may affect request caching).
+		cfgCopy := *cfg
+		cfg = &cfgCopy
 		cfg.ThinkingConfig = &genai.ThinkingConfig{
 			// We capture them in the trajectory for analysis.
 			IncludeThoughts: true,
@@ -197,6 +200,7 @@ type Context struct {
 	llmModel    string
 	cache       *Cache
 	cachedDirs  []string
+	tempDirs    []string
 	state       map[string]any
 	onEvent     onEvent
 	spanSeq     int
@@ -226,9 +230,32 @@ func (ctx *Context) Cache(typ, desc string, populate func(string) error) (string
 	return dir, nil
 }
 
+func CacheObject[T any](ctx *Context, typ, desc string, populate func() (T, error)) (T, error) {
+	dir, obj, err := cacheCreateObject(ctx.cache, typ, desc, populate)
+	if err != nil {
+		return obj, err
+	}
+	ctx.cachedDirs = append(ctx.cachedDirs, dir)
+	return obj, nil
+}
+
+// TempDir creates a new temp dir that will be automatically removed
+// when the flow finished, or on the next restart.
+func (ctx *Context) TempDir() (string, error) {
+	dir, err := ctx.cache.TempDir()
+	if err != nil {
+		return "", err
+	}
+	ctx.tempDirs = append(ctx.tempDirs, dir)
+	return dir, nil
+}
+
 func (ctx *Context) close() {
 	for _, dir := range ctx.cachedDirs {
 		ctx.cache.Release(dir)
+	}
+	for _, dir := range ctx.tempDirs {
+		os.RemoveAll(dir)
 	}
 }
 
