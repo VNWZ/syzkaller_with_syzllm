@@ -4,6 +4,10 @@
 package codesearch
 
 import (
+	"bytes"
+	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -13,12 +17,16 @@ import (
 
 type Database struct {
 	Definitions []*Definition `json:"definitions,omitempty"`
+
+	mergeCache   map[string]*Definition
+	reverseCache map[*Definition]string
+	stringCache  map[string]string
 }
 
 type Definition struct {
-	Kind     string      `json:"kind,omitempty"`
 	Name     string      `json:"name,omitempty"`
 	Type     string      `json:"type,omitempty"`
+	Kind     EntityKind  `json:"kind,omitempty"`
 	IsStatic bool        `json:"is_static,omitempty"`
 	Body     LineRange   `json:"body,omitempty"`
 	Comment  LineRange   `json:"comment,omitempty"`
@@ -26,16 +34,110 @@ type Definition struct {
 }
 
 type Reference struct {
-	Kind       string `json:"kind,omitempty"`
-	EntityKind string `json:"entity_kind,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Line       int    `json:"line,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	Kind       RefKind    `json:"kind,omitempty"`
+	EntityKind EntityKind `json:"entity_kind,omitempty"`
+	Line       uint32     `json:"line,omitempty"`
 }
 
 type LineRange struct {
 	File      string `json:"file,omitempty"`
-	StartLine int    `json:"start_line,omitempty"`
-	EndLine   int    `json:"end_line,omitempty"`
+	StartLine uint32 `json:"start_line,omitempty"`
+	EndLine   uint32 `json:"end_line,omitempty"`
+}
+
+type EntityKind uint8
+
+const (
+	entityKindInvalid EntityKind = iota
+	EntityKindFunction
+	EntityKindStruct
+	EntityKindUnion
+	EntityKindVariable
+	EntityKindMacro
+	EntityKindEnum
+	EntityKindTypedef
+	entityKindLast
+)
+
+var entityKindNames = [...]string{
+	EntityKindFunction: "function",
+	EntityKindStruct:   "struct",
+	EntityKindUnion:    "union",
+	EntityKindVariable: "variable",
+	EntityKindMacro:    "macro",
+	EntityKindEnum:     "enum",
+	EntityKindTypedef:  "typedef",
+}
+
+var entityKindBytes = func() [entityKindLast][]byte {
+	var ret [entityKindLast][]byte
+	for k, v := range entityKindNames {
+		ret[k] = []byte("\"" + v + "\"")
+	}
+	return ret
+}()
+
+func (v *EntityKind) String() string {
+	return entityKindNames[*v]
+}
+
+func (v *EntityKind) MarshalJSON() ([]byte, error) {
+	return entityKindBytes[*v], nil
+}
+
+func (v *EntityKind) UnmarshalJSON(data []byte) error {
+	*v = entityKindInvalid
+	for k, val := range entityKindBytes {
+		if bytes.Equal(data, val) {
+			*v = EntityKind(k)
+			break
+		}
+	}
+	return nil
+}
+
+type RefKind uint8
+
+const (
+	refKindInvalid RefKind = iota
+	RefKindUses
+	RefKindCall
+	RefKindTakesAddr
+	refKindLast
+)
+
+var refKindNames = [...]string{
+	RefKindUses:      "uses",
+	RefKindCall:      "calls",
+	RefKindTakesAddr: "takes-address-of",
+}
+
+var refKindBytes = func() [refKindLast][]byte {
+	var ret [refKindLast][]byte
+	for k, v := range refKindNames {
+		ret[k] = []byte("\"" + v + "\"")
+	}
+	return ret
+}()
+
+func (v *RefKind) String() string {
+	return refKindNames[*v]
+}
+
+func (v *RefKind) MarshalJSON() ([]byte, error) {
+	return refKindBytes[*v], nil
+}
+
+func (v *RefKind) UnmarshalJSON(data []byte) error {
+	*v = refKindInvalid
+	for k, val := range refKindBytes {
+		if bytes.Equal(data, val) {
+			*v = RefKind(k)
+			break
+		}
+	}
+	return nil
 }
 
 // DatabaseFormatHash contains a hash uniquely identifying format of the database.
@@ -44,7 +146,7 @@ type LineRange struct {
 var DatabaseFormatHash = func() string {
 	// Semantic version should be bumped when the schema does not change,
 	// but stored values changes.
-	const semanticVersion = "2"
+	const semanticVersion = "3"
 	schema, err := jsonschema.For[Database](nil)
 	if err != nil {
 		panic(err)
@@ -52,19 +154,40 @@ var DatabaseFormatHash = func() string {
 	return hash.String(schema, semanticVersion)
 }()
 
-func (db *Database) Merge(other *Database) {
-	db.Definitions = append(db.Definitions, other.Definitions...)
+func (db *Database) Merge(other *Database, v *clangtool.Verifier) {
+	if db.mergeCache == nil {
+		db.mergeCache = make(map[string]*Definition)
+		db.reverseCache = make(map[*Definition]string)
+		db.stringCache = make(map[string]string)
+	}
+	for _, def := range other.Definitions {
+		id := fmt.Sprintf("%v-%v-%v", def.Kind, def.Name, def.Body.File)
+		if _, ok := db.mergeCache[id]; ok {
+			continue
+		}
+		db.mergeCache[id] = def
+		db.reverseCache[def] = id
+		v.LineRange(def.Body.File, int(def.Body.StartLine), int(def.Body.EndLine))
+		if def.Comment.File != "" {
+			v.LineRange(def.Comment.File, int(def.Comment.StartLine), int(def.Comment.EndLine))
+		}
+		db.intern(&def.Name)
+		db.intern(&def.Type)
+		db.intern(&def.Body.File)
+		db.intern(&def.Comment.File)
+		for _, ref := range def.Refs {
+			db.intern(&ref.Name)
+		}
+	}
 }
 
 func (db *Database) Finalize(v *clangtool.Verifier) {
-	db.Definitions = clangtool.SortAndDedupSlice(db.Definitions)
-
-	for _, def := range db.Definitions {
-		v.LineRange(def.Body.File, def.Body.StartLine, def.Body.EndLine)
-		if def.Comment.File != "" {
-			v.LineRange(def.Comment.File, def.Comment.StartLine, def.Comment.EndLine)
-		}
-	}
+	db.Definitions = slices.Collect(maps.Values(db.mergeCache))
+	slices.SortFunc(db.Definitions, func(a, b *Definition) int {
+		return strings.Compare(db.reverseCache[a], db.reverseCache[b])
+	})
+	db.mergeCache = nil
+	db.reverseCache = nil
 }
 
 // SetSoureFile attaches the source file to the entities that need it.
@@ -77,4 +200,16 @@ func (db *Database) SetSourceFile(file string, updatePath func(string) string) {
 			def.IsStatic = false
 		}
 	}
+}
+
+func (db *Database) intern(str *string) {
+	if *str == "" {
+		return
+	}
+	v, ok := db.stringCache[*str]
+	if !ok {
+		v = strings.Clone(*str)
+		db.stringCache[v] = v
+	}
+	*str = v
 }
