@@ -10,6 +10,7 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/action/crash"
 	"github.com/google/syzkaller/pkg/aflow/action/kernel"
 	"github.com/google/syzkaller/pkg/aflow/ai"
+	"github.com/google/syzkaller/pkg/aflow/tool/codeexpert"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
 )
 
@@ -35,51 +36,51 @@ type Inputs struct {
 type Outputs struct {
 	PatchDescription string
 	PatchDiff        string
+	KernelScratchSrc string // it's unused for now, but should be used by codeeditor tool later
 }
 
 func init() {
-	tools := codesearcher.Tools
+	tools := append([]aflow.Tool{codeexpert.Tool}, codesearcher.Tools...)
 
 	aflow.Register[Inputs, Outputs](
 		ai.WorkflowPatching,
 		"generate a kernel patch fixing a provided bug reproducer",
 		&aflow.Flow{
-			Root: &aflow.Pipeline{
-				Actions: []aflow.Action{
-					baseCommitPicker,
-					kernel.Checkout,
-					kernel.Build,
-					// Ensure we can reproduce the crash (and the build boots).
-					crash.Reproduce,
-					codesearcher.PrepareIndex,
-					&aflow.LLMAgent{
-						Name:        "debugger",
-						Model:       aflow.BestExpensiveModel,
-						Reply:       "BugExplanation",
-						Temperature: 1,
-						Instruction: debuggingInstruction,
-						Prompt:      debuggingPrompt,
-						Tools:       tools,
-					},
-					&aflow.LLMAgent{
-						Name:        "diff-generator",
-						Model:       aflow.BestExpensiveModel,
-						Reply:       "PatchDiff",
-						Temperature: 1,
-						Instruction: diffInstruction,
-						Prompt:      diffPrompt,
-						Tools:       tools,
-					},
-					&aflow.LLMAgent{
-						Name:        "description-generator",
-						Model:       aflow.BestExpensiveModel,
-						Reply:       "PatchDescription",
-						Temperature: 1,
-						Instruction: descriptionInstruction,
-						Prompt:      descriptionPrompt,
-					},
+			Root: aflow.Pipeline(
+				baseCommitPicker,
+				kernel.Checkout,
+				kernel.Build,
+				// Ensure we can reproduce the crash (and the build boots).
+				crash.Reproduce,
+				codesearcher.PrepareIndex,
+				&aflow.LLMAgent{
+					Name:        "debugger",
+					Model:       aflow.BestExpensiveModel,
+					Reply:       "BugExplanation",
+					Temperature: 1,
+					Instruction: debuggingInstruction,
+					Prompt:      debuggingPrompt,
+					Tools:       tools,
 				},
-			},
+				kernel.CheckoutScratch,
+				&aflow.LLMAgent{
+					Name:        "diff-generator",
+					Model:       aflow.BestExpensiveModel,
+					Reply:       "PatchDiff",
+					Temperature: 1,
+					Instruction: diffInstruction,
+					Prompt:      diffPrompt,
+					Tools:       tools,
+				},
+				&aflow.LLMAgent{
+					Name:        "description-generator",
+					Model:       aflow.BestExpensiveModel,
+					Reply:       "PatchDescription",
+					Temperature: 1,
+					Instruction: descriptionInstruction,
+					Prompt:      descriptionPrompt,
+				},
+			),
 		},
 	)
 }
