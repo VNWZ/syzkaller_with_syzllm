@@ -45,10 +45,10 @@
 #define X86_SYZOS_ADDR_PML4 0x2000
 // PDP for GPAs 0x0 - 0x7fffffffff.
 #define X86_SYZOS_ADDR_PDP 0x3000
-// Pool of 32 pages for dynamic PT/PD allocations.
-#define X86_SYZOS_ADDR_PT_POOL 0x5000
 #define X86_SYZOS_ADDR_VAR_IDT 0x25000
 #define X86_SYZOS_ADDR_VAR_TSS 0x26000
+// Dedicated page for passing configuration (memory map) to L1.
+#define X86_SYZOS_ADDR_BOOT_ARGS 0x2F000
 
 #define X86_SYZOS_ADDR_SMRAM 0x30000
 // Write to this page to trigger a page fault and stop KVM_RUN.
@@ -75,6 +75,14 @@
 #define X86_SYZOS_L1_VCPU_OFFSET_VM_ARCH_SPECIFIC 0x0000
 // Base offset for the area containing the 4 L2 VM slots.
 #define X86_SYZOS_L1_VCPU_OFFSET_L2_VMS_AREA 0x1000
+
+// Global state page (Allocator offsets, etc).
+#define X86_SYZOS_ADDR_GLOBALS 0x17F000
+
+// Separated Page Table Pool in high memory.
+// Located above L2 VCPU regions.
+#define X86_SYZOS_ADDR_PT_POOL 0x180000
+#define X86_SYZOS_PT_POOL_SIZE 64
 
 // Layout of a single L2 VM's data block.
 

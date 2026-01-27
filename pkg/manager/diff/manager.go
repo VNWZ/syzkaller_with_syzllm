@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/manager"
@@ -44,6 +45,9 @@ type Config struct {
 	// the particular base kernel has already been seen to crash with the given title.
 	// It helps reduce the number of unnecessary reproductions.
 	IgnoreCrash func(context.Context, string) (bool, error)
+
+	runner   runner
+	runRepro func(context.Context, []byte, repro.Environment) (*repro.Result, *repro.Stats, error)
 }
 
 func (cfg *Config) TriageDeadline() <-chan time.Time {
@@ -88,6 +92,13 @@ func Run(ctx context.Context, baseCfg, newCfg *mgrconfig.Config, cfg Config) err
 	base.source = stream
 	new.duplicateInto = stream
 
+	if cfg.runRepro == nil {
+		cfg.runRepro = repro.Run
+	}
+	if cfg.runner == nil {
+		cfg.runner = &reproRunner{done: make(chan reproRunnerResult, 2)}
+	}
+
 	diffCtx := &diffContext{
 		cfg:           cfg,
 		doneRepro:     make(chan *manager.ReproResult),
@@ -115,14 +126,26 @@ func Run(ctx context.Context, baseCfg, newCfg *mgrconfig.Config, cfg Config) err
 	return eg.Wait()
 }
 
+type Kernel interface {
+	Loop(ctx context.Context) error
+	Crashes() <-chan *report.Report
+	TriageProgress() float64
+	ProgsPerArea() map[string]int
+	CoverFilters() manager.CoverageFilters
+	Config() *mgrconfig.Config
+	Pool() *vm.Dispatcher
+	Features() flatrpc.Feature
+	Reporter() *report.Reporter
+}
+
 type diffContext struct {
 	cfg   Config
 	store *manager.DiffFuzzerStore
 	http  *manager.HTTPServer
 
 	doneRepro   chan *manager.ReproResult
-	base        *kernelContext
-	new         *kernelContext
+	base        Kernel
+	new         Kernel
 	patchedOnly chan *Bug
 
 	mu            sync.Mutex
@@ -138,7 +161,7 @@ const (
 
 func (dc *diffContext) Loop(ctx context.Context) error {
 	g, groupCtx := errgroup.WithContext(ctx)
-	reproLoop := manager.NewReproLoop(dc, dc.new.pool.Total()-dc.new.cfg.FuzzingVMs, false)
+	reproLoop := manager.NewReproLoop(dc, dc.new.Pool().Total()-dc.new.Config().FuzzingVMs, false)
 	if dc.http != nil {
 		dc.http.ReproLoop = reproLoop
 		g.Go(func() error {
@@ -163,7 +186,7 @@ func (dc *diffContext) Loop(ctx context.Context) error {
 	g.Go(func() error { return dc.base.Loop(groupCtx) })
 	g.Go(func() error { return dc.new.Loop(groupCtx) })
 
-	runner := &reproRunner{done: make(chan reproRunnerResult, 2), kernel: dc.base}
+	runner := dc.cfg.runner
 	statTimer := time.NewTicker(5 * time.Minute)
 loop:
 	for {
@@ -177,10 +200,10 @@ loop:
 			}
 			data, _ := json.MarshalIndent(vals, "", "  ")
 			log.Logf(0, "STAT %s", data)
-		case rep := <-dc.base.crashes:
+		case rep := <-dc.base.Crashes():
 			log.Logf(1, "base crash: %v", rep.Title)
 			dc.reportBaseCrash(groupCtx, rep)
-		case ret := <-runner.done:
+		case ret := <-runner.Results():
 			dc.handleReproResult(groupCtx, ret, reproLoop)
 		case ret := <-dc.doneRepro:
 			// We have finished reproducing a crash from the patched instance.
@@ -191,16 +214,20 @@ loop:
 				}
 				log.Logf(1, "found repro for %q (orig title: %q, reliability: %2.f), took %.2f minutes",
 					ret.Repro.Report.Title, origTitle, ret.Repro.Reliability, ret.Stats.TotalTime.Minutes())
+
+				dc.store.UpdateStatus(ret.Repro.Report.Title, manager.DiffBugStatusVerifying)
+
 				g.Go(func() error {
-					runner.Run(groupCtx, ret.Repro, ret.Crash.FullRepro)
+					runner.Run(groupCtx, dc.base, ret.Repro, ret.Crash.FullRepro)
 					return nil
 				})
 			} else {
 				origTitle := ret.Crash.Report.Title
 				log.Logf(1, "failed repro for %q, err=%s", origTitle, ret.Err)
+				dc.store.UpdateStatus(origTitle, manager.DiffBugStatusCompleted)
 			}
 			dc.store.SaveRepro(ret)
-		case rep := <-dc.new.crashes:
+		case rep := <-dc.new.Crashes():
 			// A new crash is found on the patched instance.
 			crash := &manager.Crash{Report: rep}
 			need := dc.NeedRepro(crash)
@@ -208,7 +235,10 @@ loop:
 				rep.Title, need)
 			dc.store.PatchedCrashed(rep.Title, rep.Report, rep.Output)
 			if need {
+				dc.store.UpdateStatus(rep.Title, manager.DiffBugStatusVerifying)
 				reproLoop.Enqueue(crash)
+			} else {
+				dc.store.UpdateStatus(rep.Title, manager.DiffBugStatusIgnored)
 			}
 		}
 	}
@@ -234,9 +264,9 @@ func (dc *diffContext) handleReproResult(ctx context.Context, ret reproRunnerRes
 			Repro:  ret.repro,
 		}:
 		}
-		log.Logf(0, "patched-only: %s", ret.reproReport.Title)
 		// Now that we know this bug only affects the patch kernel, we can spend more time
 		// generating a minimalistic repro and a C repro.
+		log.Logf(0, "patched-only: %s", ret.reproReport.Title)
 		if !ret.fullRepro {
 			reproLoop.Enqueue(&manager.Crash{
 				Report: &report.Report{
@@ -283,19 +313,19 @@ func (dc *diffContext) reportBaseCrash(ctx context.Context, rep *report.Report) 
 }
 
 func (dc *diffContext) waitCorpusTriage(ctx context.Context, threshold float64) chan struct{} {
-	const backOffTime = 30 * time.Second
+	const triageCheckPeriod = 30 * time.Second
 	ret := make(chan struct{})
 	go func() {
 		for {
-			select {
-			case <-time.After(backOffTime):
-			case <-ctx.Done():
-				return
-			}
-			triaged := dc.new.triageProgress()
+			triaged := dc.new.TriageProgress()
 			if triaged >= threshold {
 				log.Logf(0, "triaged %.1f%% of the corpus", triaged*100.0)
 				close(ret)
+				return
+			}
+			select {
+			case <-time.After(triageCheckPeriod):
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -321,7 +351,7 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 	// By this moment, we must have coverage filters already filled out.
 	focusPCs := 0
 	// The last one is "everything else", so it's not of interest.
-	coverFilters := dc.new.coverFilters
+	coverFilters := dc.new.CoverFilters()
 	for i := 0; i < len(coverFilters.Areas)-1; i++ {
 		focusPCs += len(coverFilters.Areas[i].CoverPCs)
 	}
@@ -337,7 +367,7 @@ func (dc *diffContext) monitorPatchedCoverage(ctx context.Context) error {
 	case <-ctx.Done():
 		return nil
 	}
-	focusAreaStats := dc.new.progsPerArea()
+	focusAreaStats := dc.new.ProgsPerArea()
 	if focusAreaStats[symbolsArea]+focusAreaStats[filesArea]+focusAreaStats[includesArea] > 0 {
 		log.Logf(0, "fuzzer has reached the modified code (%d + %d + %d), continuing fuzzing",
 			focusAreaStats[symbolsArea], focusAreaStats[filesArea], focusAreaStats[includesArea])
@@ -384,11 +414,11 @@ func (dc *diffContext) RunRepro(ctx context.Context, crash *manager.Crash) *mana
 	dc.reproAttempts[crash.Title]++
 	dc.mu.Unlock()
 
-	res, stats, err := repro.Run(ctx, crash.Output, repro.Environment{
-		Config:   dc.new.cfg,
-		Features: dc.new.features,
-		Reporter: dc.new.reporter,
-		Pool:     dc.new.pool,
+	res, stats, err := dc.cfg.runRepro(ctx, crash.Output, repro.Environment{
+		Config:   dc.new.Config(),
+		Features: dc.new.Features(),
+		Reporter: dc.new.Reporter(),
+		Pool:     dc.new.Pool(),
 		Fast:     !crash.FullRepro,
 	})
 	if res != nil && res.Report != nil {
@@ -412,5 +442,5 @@ func (dc *diffContext) RunRepro(ctx context.Context, crash *manager.Crash) *mana
 }
 
 func (dc *diffContext) ResizeReproPool(size int) {
-	dc.new.pool.ReserveForRun(size)
+	dc.new.Pool().ReserveForRun(size)
 }

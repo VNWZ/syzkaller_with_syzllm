@@ -11,6 +11,7 @@ import (
 	"maps"
 	_ "net/http/pprof"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -51,6 +52,8 @@ type Config struct {
 	FixedRepository string `json:"repo"`
 	// Use this LLM model (for testing, if empty use workflow-default model).
 	Model string `json:"model"`
+	// Names of workflows to serve (all if not set, mainly for testing/local experimentation).
+	Workflows []string `json:"workflows"`
 }
 
 func main() {
@@ -175,7 +178,8 @@ func (s *Server) poll(ctx context.Context) (bool, error) {
 		CodeRevision: prog.GitRevision,
 	}
 	for _, flow := range aflow.Flows {
-		if s.modelOverQuota(flow) {
+		if len(s.cfg.Workflows) != 0 && !slices.Contains(s.cfg.Workflows, flow.Name) ||
+			s.modelOverQuota(flow) {
 			continue
 		}
 		req.Workflows = append(req.Workflows, dashapi.AIWorkflow{
@@ -183,6 +187,7 @@ func (s *Server) poll(ctx context.Context) (bool, error) {
 			Name: flow.Name,
 		})
 	}
+	log.Logf(0, "querying jobs for %v", req.Workflows)
 	resp, err := s.dash.AIJobPoll(req)
 	if err != nil {
 		return false, err
@@ -190,6 +195,8 @@ func (s *Server) poll(ctx context.Context) (bool, error) {
 	if resp.ID == "" {
 		return false, nil
 	}
+	log.Logf(0, "starting job %v %v", resp.Workflow, resp.ID)
+	defer log.Logf(0, "finished job %v %v", resp.Workflow, resp.ID)
 	doneReq := &dashapi.AIJobDoneReq{
 		ID: resp.ID,
 	}
@@ -208,10 +215,14 @@ func (s *Server) poll(ctx context.Context) (bool, error) {
 			// the dashboard at all. For the dashboard it will look like
 			// the server has crashed while executing the job, and it should
 			// eventually retry it on common grounds.
-			s.overQuotaModels[model] = time.Now()
+			now := time.Now()
+			s.overQuotaModels[model] = now
+			log.Logf(0, "model %v is over daily quota until %v",
+				model, aflow.QuotaResetTime(now))
 			return true, nil
 		}
 	}
+	log.Logf(0, "done executing job %v %v", resp.Workflow, resp.ID)
 	if err := s.dash.AIJobDone(doneReq); err != nil {
 		return false, err
 	}
@@ -261,6 +272,7 @@ func (s *Server) modelOverQuota(flow *aflow.Flow) bool {
 func (s *Server) resetModelQuota() {
 	for model, when := range s.overQuotaModels {
 		if aflow.QuotaResetTime(when).After(time.Now()) {
+			log.Logf(0, "model %v daily quota is replenished", model)
 			delete(s.overQuotaModels, model)
 		}
 	}

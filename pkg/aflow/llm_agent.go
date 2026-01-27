@@ -9,6 +9,8 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +35,7 @@ type LLMAgent struct {
 	// Value that controls the degree of randomness in token selection.
 	// Lower temperatures are good for prompts that require a less open-ended or creative response,
 	// while higher temperatures can lead to more diverse or creative results.
-	// Must be assigned a float32 value in the range [0, 2].
+	// Must be assigned a number in the range [0, 2].
 	Temperature any
 	// If set, the agent will generate that many candidates and the outputs will be arrays
 	// instead of scalars.
@@ -190,8 +192,7 @@ func (a *LLMAgent) chat(ctx *Context, cfg *genai.GenerateContentConfig, tools ma
 		if err != nil {
 			return "", nil, ctx.finishSpan(reqSpan, err)
 		}
-		reply, thoughts, calls, respErr := a.parseResponse(resp)
-		reqSpan.Thoughts = thoughts
+		reply, calls, respErr := a.parseResponse(resp, reqSpan)
 		if err := ctx.finishSpan(reqSpan, respErr); err != nil {
 			return "", nil, err
 		}
@@ -243,7 +244,7 @@ func (a *LLMAgent) config(ctx *Context) (*genai.GenerateContentConfig, string, m
 	}
 	return &genai.GenerateContentConfig{
 		ResponseModalities: []string{"TEXT"},
-		Temperature:        genai.Ptr(a.Temperature.(float32)),
+		Temperature:        genai.Ptr(float32(a.Temperature.(float64))),
 		SystemInstruction:  genai.NewContentFromText(instruction, genai.RoleUser),
 		Tools:              tools,
 	}, instruction, toolMap
@@ -264,7 +265,7 @@ func (a *LLMAgent) callTools(ctx *Context, tools map[string]Tool, calls []*genai
 		if err := ctx.startSpan(span); err != nil {
 			return nil, nil, err
 		}
-		toolErr := BadCallError(fmt.Sprintf("tool %q does not exist, please correct the name", call.Name))
+		toolErr := BadCallError("tool %q does not exist, please correct the name", call.Name)
 		tool := tools[call.Name]
 		if tool != nil {
 			span.Results, toolErr = tool.execute(ctx, call.Args)
@@ -300,8 +301,8 @@ func (a *LLMAgent) callTools(ctx *Context, tools map[string]Tool, calls []*genai
 	return responses, outputs, nil
 }
 
-func (a *LLMAgent) parseResponse(resp *genai.GenerateContentResponse) (
-	reply, thoughts string, calls []*genai.FunctionCall, err error) {
+func (a *LLMAgent) parseResponse(resp *genai.GenerateContentResponse, span *trajectory.Span) (
+	reply string, calls []*genai.FunctionCall, err error) {
 	if len(resp.Candidates) == 0 || resp.Candidates[0] == nil {
 		err = fmt.Errorf("empty model response")
 		if resp.PromptFeedback != nil {
@@ -320,6 +321,13 @@ func (a *LLMAgent) parseResponse(resp *genai.GenerateContentResponse) (
 		err = fmt.Errorf("unexpected reply fields (%+v)", *candidate)
 		return
 	}
+	if resp.UsageMetadata != nil {
+		// We add ToolUsePromptTokenCount just in case, but Gemini does not use/set it.
+		span.InputTokens = int(resp.UsageMetadata.PromptTokenCount) +
+			int(resp.UsageMetadata.ToolUsePromptTokenCount)
+		span.OutputTokens = int(resp.UsageMetadata.CandidatesTokenCount)
+		span.OutputThoughtsTokens = int(resp.UsageMetadata.ThoughtsTokenCount)
+	}
 	for _, part := range candidate.Content.Parts {
 		// We don't expect to receive these now.
 		if part.VideoMetadata != nil || part.InlineData != nil ||
@@ -331,13 +339,18 @@ func (a *LLMAgent) parseResponse(resp *genai.GenerateContentResponse) (
 		if part.FunctionCall != nil {
 			calls = append(calls, part.FunctionCall)
 		} else if part.Thought {
-			thoughts += part.Text
+			span.Thoughts += part.Text
 		} else {
 			reply += part.Text
 		}
 	}
 	if strings.TrimSpace(reply) == "" {
 		reply = ""
+	}
+	// If there is any reply along with tool calls, append it to thoughts.
+	// Otherwise it won't show up in the trajectory anywhere.
+	if len(calls) != 0 && reply != "" {
+		span.Thoughts += "\n" + reply
 	}
 	return
 }
@@ -355,13 +368,21 @@ func (a *LLMAgent) generateContent(ctx *Context, cfg *genai.GenerateContentConfi
 			continue
 		}
 		if err != nil && errors.As(err, &apiErr) && apiErr.Code == http.StatusTooManyRequests &&
-			strings.Contains(apiErr.Message, "Quota exceeded for metric") &&
-			strings.Contains(apiErr.Message, "generate_requests_per_model_per_day") {
-			return resp, &modelQuotaError{ctx.modelName(a.Model)}
+			strings.Contains(apiErr.Message, "Quota exceeded for metric") {
+			if match := rePleaseRetry.FindStringSubmatch(apiErr.Message); match != nil {
+				sec, _ := strconv.Atoi(match[1])
+				time.Sleep(time.Duration(sec+1) * time.Second)
+				continue
+			}
+			if strings.Contains(apiErr.Message, "generate_requests_per_model_per_day") {
+				return resp, &modelQuotaError{ctx.modelName(a.Model)}
+			}
 		}
 		return resp, err
 	}
 }
+
+var rePleaseRetry = regexp.MustCompile("Please retry in ([0-9]+)[.s]")
 
 func (a *LLMAgent) generateContentCached(ctx *Context, cfg *genai.GenerateContentConfig,
 	req []*genai.Content, candidate int) (*genai.GenerateContentResponse, error) {
@@ -389,10 +410,10 @@ func (a *LLMAgent) verify(ctx *verifyContext) {
 	ctx.requireNotEmpty(a.Name, "Model", a.Model)
 	ctx.requireNotEmpty(a.Name, "Reply", a.Reply)
 	if temp, ok := a.Temperature.(int); ok {
-		a.Temperature = float32(temp)
+		a.Temperature = float64(temp)
 	}
-	if temp, ok := a.Temperature.(float32); !ok || temp < 0 || temp > 2 {
-		ctx.errorf(a.Name, "Temperature must have a float32 value in the range [0, 2]")
+	if temp, ok := a.Temperature.(float64); !ok || temp < 0 || temp > 2 {
+		ctx.errorf(a.Name, "Temperature must be a number in the range [0, 2]")
 	}
 	if a.Candidates < 0 || a.Candidates > 100 {
 		ctx.errorf(a.Name, "Candidates must be in the range [0, 100]")

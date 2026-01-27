@@ -26,8 +26,10 @@ import (
 const AIAccessLevel = AccessUser
 
 type uiAIJobsPage struct {
-	Header *uiHeader
-	Jobs   []*uiAIJob
+	Header          *uiHeader
+	Jobs            []*uiAIJob
+	Workflows       []string
+	CurrentWorkflow string
 }
 
 type uiAIJobPage struct {
@@ -62,20 +64,23 @@ type uiAIResult struct {
 }
 
 type uiAITrajectorySpan struct {
-	Started     time.Time
-	Seq         int64
-	Nesting     int64
-	Type        string
-	Name        string
-	Model       string
-	Duration    time.Duration
-	Error       string
-	Args        string
-	Results     string
-	Instruction string
-	Prompt      string
-	Reply       string
-	Thoughts    string
+	Started              time.Time
+	Seq                  int64
+	Nesting              int64
+	Type                 string
+	Name                 string
+	Model                string
+	Duration             time.Duration
+	Error                string
+	Args                 string
+	Results              string
+	Instruction          string
+	Prompt               string
+	Reply                string
+	Thoughts             string
+	InputTokens          int
+	OutputTokens         int
+	OutputThoughtsTokens int
 }
 
 func handleAIJobsPage(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
@@ -90,13 +95,28 @@ func handleAIJobsPage(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
+	workflowParam := r.FormValue("workflow")
 	var uiJobs []*uiAIJob
 	for _, job := range jobs {
+		if workflowParam != "" && job.Workflow != workflowParam {
+			continue
+		}
 		uiJobs = append(uiJobs, makeUIAIJob(job))
 	}
+	workflows, err := aidb.LoadWorkflows(ctx)
+	if err != nil {
+		return err
+	}
+	var workflowNames []string
+	for _, w := range workflows {
+		workflowNames = append(workflowNames, w.Name)
+	}
+	slices.Sort(workflowNames)
 	page := &uiAIJobsPage{
-		Header: hdr,
-		Jobs:   uiJobs,
+		Header:          hdr,
+		Jobs:            uiJobs,
+		Workflows:       workflowNames,
+		CurrentWorkflow: workflowParam,
 	}
 	return serveTemplate(w, "ai_jobs.html", page)
 }
@@ -180,8 +200,10 @@ func makeUIAIJob(job *aidb.Job) *uiAIJob {
 	})
 
 	correct := aiCorrectnessIncorrect
-	if !job.Finished.Valid {
+	if !job.Started.Valid {
 		correct = aiCorrectnessPending
+	} else if !job.Finished.Valid {
+		correct = aiCorrectnessRunning
 	} else if job.Error != "" {
 		correct = aiCorrectnessErrored
 	} else if !job.Correct.Valid {
@@ -214,20 +236,23 @@ func makeUIAITrajectory(trajetory []*aidb.TrajectorySpan) []*uiAITrajectorySpan 
 			duration = span.Finished.Time.Sub(span.Started)
 		}
 		res = append(res, &uiAITrajectorySpan{
-			Started:     span.Started,
-			Seq:         span.Seq,
-			Nesting:     span.Nesting,
-			Type:        span.Type,
-			Name:        span.Name,
-			Model:       span.Model,
-			Duration:    duration,
-			Error:       nullString(span.Error),
-			Args:        nullJSON(span.Args),
-			Results:     nullJSON(span.Results),
-			Instruction: nullString(span.Instruction),
-			Prompt:      nullString(span.Prompt),
-			Reply:       nullString(span.Reply),
-			Thoughts:    nullString(span.Thoughts),
+			Started:              span.Started,
+			Seq:                  span.Seq,
+			Nesting:              span.Nesting,
+			Type:                 span.Type,
+			Name:                 span.Name,
+			Model:                span.Model,
+			Duration:             duration,
+			Error:                nullString(span.Error),
+			Args:                 nullJSON(span.Args),
+			Results:              nullJSON(span.Results),
+			Instruction:          nullString(span.Instruction),
+			Prompt:               nullString(span.Prompt),
+			Reply:                nullString(span.Reply),
+			Thoughts:             nullString(span.Thoughts),
+			InputTokens:          nullInt64(span.InputTokens),
+			OutputTokens:         nullInt64(span.OutputTokens),
+			OutputThoughtsTokens: nullInt64(span.OutputThoughtsTokens),
 		})
 	}
 	return res
@@ -599,6 +624,7 @@ const (
 	aiCorrectnessIncorrect = "❌"
 	aiCorrectnessUnset     = "❓"
 	aiCorrectnessPending   = "⏳"
+	aiCorrectnessRunning   = "🏃"
 	aiCorrectnessErrored   = "💥"
 )
 
@@ -621,4 +647,11 @@ func nullJSON(v spanner.NullJSON) string {
 		return ""
 	}
 	return fmt.Sprint(v.Value)
+}
+
+func nullInt64(v spanner.NullInt64) int {
+	if !v.Valid {
+		return 0
+	}
+	return int(v.Int64)
 }

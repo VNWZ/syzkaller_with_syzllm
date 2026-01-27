@@ -188,6 +188,9 @@ func TestWorkflow(t *testing.T) {
 					},
 				},
 				{
+					Text: "Some non-thoughts reply along with tool calls",
+				},
+				{
 					Text:    "I am thinking I need to call some tools",
 					Thought: true,
 				},
@@ -321,7 +324,7 @@ func TestToolMisbehavior(t *testing.T) {
 			&LLMAgent{
 				Name:        "smarty",
 				Model:       "model",
-				Temperature: 1,
+				Temperature: 0.5,
 				Reply:       "Reply",
 
 				Outputs: LLMOutputs[struct {
