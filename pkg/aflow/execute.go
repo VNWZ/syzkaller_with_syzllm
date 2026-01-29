@@ -153,7 +153,7 @@ var (
 	createClientOnce sync.Once
 	createClientErr  error
 	client           *genai.Client
-	modelList        = make(map[string]*modelInfo)
+	modelList        map[string]*modelInfo
 	stubContextKey   = contextKeyType(1)
 )
 
@@ -166,34 +166,8 @@ type modelInfo struct {
 
 func (ctx *Context) generateContentGemini(model string, cfg *genai.GenerateContentConfig,
 	req []*genai.Content) (*genai.GenerateContentResponse, error) {
-	const modelPrefix = "models/"
 	createClientOnce.Do(func() {
-		if os.Getenv("GOOGLE_API_KEY") == "" {
-			createClientErr = fmt.Errorf("set GOOGLE_API_KEY env var to use with Gemini" +
-				" (see https://ai.google.dev/gemini-api/docs/api-key)")
-			return
-		}
-		client, createClientErr = genai.NewClient(ctx.Context, nil)
-		if createClientErr != nil {
-			return
-		}
-		for m, err := range client.Models.All(ctx.Context) {
-			if err != nil {
-				createClientErr = err
-				return
-			}
-			if !slices.Contains(m.SupportedActions, "generateContent") ||
-				strings.Contains(m.Name, "-image") ||
-				strings.Contains(m.Name, "-audio") {
-				continue
-			}
-			modelList[strings.TrimPrefix(m.Name, modelPrefix)] = &modelInfo{
-				Thinking:         m.Thinking,
-				MaxTemperature:   m.MaxTemperature,
-				InputTokenLimit:  int(m.InputTokenLimit),
-				OutputTokenLimit: int(m.OutputTokenLimit),
-			}
-		}
+		client, modelList, createClientErr = loadModelList(ctx.Context)
 	})
 	if createClientErr != nil {
 		return nil, createClientErr
@@ -219,7 +193,47 @@ func (ctx *Context) generateContentGemini(model string, cfg *genai.GenerateConte
 			ThinkingBudget: genai.Ptr[int32](-1),
 		}
 	}
-	return client.Models.GenerateContent(ctx.Context, modelPrefix+model, req, cfg)
+	// Sometimes LLM requests just hang dead for tens of minutes,
+	// abort them after 10 minutes and retry. We don't stream reply tokens,
+	// so some large requests can take several minutes.
+	timedCtx, cancel := context.WithTimeout(ctx.Context, 10*time.Minute)
+	defer cancel()
+	resp, err := client.Models.GenerateContent(timedCtx, modelPrefix+model, req, cfg)
+	if err != nil && timedCtx.Err() == context.DeadlineExceeded {
+		return nil, &retryError{time.Second, err}
+	}
+	return resp, err
+}
+
+const modelPrefix = "models/"
+
+func loadModelList(ctx context.Context) (*genai.Client, map[string]*modelInfo, error) {
+	if os.Getenv("GOOGLE_API_KEY") == "" {
+		return nil, nil, fmt.Errorf("set GOOGLE_API_KEY env var to use with Gemini" +
+			" (see https://ai.google.dev/gemini-api/docs/api-key)")
+	}
+	client, err := genai.NewClient(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	models := make(map[string]*modelInfo)
+	for m, err := range client.Models.All(ctx) {
+		if err != nil {
+			return nil, nil, err
+		}
+		if !slices.Contains(m.SupportedActions, "generateContent") ||
+			strings.Contains(m.Name, "-image") ||
+			strings.Contains(m.Name, "-audio") {
+			continue
+		}
+		models[strings.TrimPrefix(m.Name, modelPrefix)] = &modelInfo{
+			Thinking:         m.Thinking,
+			MaxTemperature:   m.MaxTemperature,
+			InputTokenLimit:  int(m.InputTokenLimit),
+			OutputTokenLimit: int(m.OutputTokenLimit),
+		}
+	}
+	return client, models, nil
 }
 
 type Context struct {
