@@ -103,3 +103,59 @@ func TestParseLLMErrorBackoff(t *testing.T) {
 	err := parseLLMError(nil, err0, "model", maxLLMRetryIters)
 	require.Equal(t, err, err0)
 }
+
+func TestSummaryWindow(t *testing.T) {
+	type flowOutputs struct {
+		Reply string
+	}
+	type toolResults struct {
+		ResFoo int `jsonschema:"foo"`
+	}
+
+	// The history (req) starts with 1 message (User Prompt).
+	// Each tool call cycle adds 2 messages (Model Response + Tool Response).
+	agent := &LLMAgent{
+		Name:          "summary_agent",
+		Model:         "model",
+		Reply:         "Reply",
+		SummaryWindow: 3,
+		Temperature:   0.0,
+		Instruction:   "Instructions",
+		Prompt:        "Initial Prompt",
+		Tools: []Tool{
+			NewFuncTool("tick", func(ctx *Context, state struct{}, args struct{}) (toolResults, error) {
+				return toolResults{123}, nil
+			}, "logic ticker"),
+		},
+	}
+
+	requestSeq := 0
+	testFlow[struct{}, flowOutputs](t, nil,
+		map[string]any{"Reply": "Done"},
+		Pipeline(agent),
+		[]any{
+			func(model string, cfg *genai.GenerateContentConfig, req []*genai.Content) (
+				*genai.GenerateContentResponse, error) {
+				requestSeq++
+				reply := []*genai.Part{{
+					FunctionCall: &genai.FunctionCall{
+						ID:   fmt.Sprintf("id%v", requestSeq),
+						Name: "tick",
+					}}}
+				lastReq := req[len(req)-1]
+				lastPart := lastReq.Parts[len(lastReq.Parts)-1]
+				if lastPart.Text == slidingWindowInstruction {
+					reply = append(reply, genai.NewPartFromText(fmt.Sprintf("summary %v", requestSeq)))
+				} else if requestSeq > 6 {
+					reply = []*genai.Part{genai.NewPartFromText("Done")}
+				}
+				return &genai.GenerateContentResponse{
+					Candidates: []*genai.Candidate{{
+						Content: &genai.Content{
+							Parts: reply,
+							Role:  genai.RoleModel,
+						}}}}, nil
+			},
+		},
+	)
+}
