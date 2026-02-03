@@ -8,6 +8,7 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/action/kernel"
 	"github.com/google/syzkaller/pkg/aflow/ai"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
+	"github.com/google/syzkaller/pkg/aflow/tool/grepper"
 )
 
 type kcsanInputs struct {
@@ -36,10 +37,10 @@ func init() {
 						Confident bool `jsonschema:"If you are confident in the verdict of the analysis or not."`
 						Benign    bool `jsonschema:"If the data race is benign or not."`
 					}](),
-					Temperature: 1,
+					TaskType:    aflow.FormalReasoningTask,
 					Instruction: kcsanInstruction,
 					Prompt:      kcsanPrompt,
-					Tools:       codesearcher.Tools,
+					Tools:       append(codesearcher.Tools, grepper.Tool),
 				},
 			),
 		},

@@ -14,6 +14,7 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/tool/codeeditor"
 	"github.com/google/syzkaller/pkg/aflow/tool/codeexpert"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
+	"github.com/google/syzkaller/pkg/aflow/tool/grepper"
 )
 
 type Inputs struct {
@@ -36,7 +37,7 @@ type Inputs struct {
 }
 
 func createPatchingFlow(name string, summaryWindow int) *aflow.Flow {
-	commonTools := slices.Clip(append([]aflow.Tool{codeexpert.Tool}, codesearcher.Tools...))
+	commonTools := slices.Clip(append([]aflow.Tool{codeexpert.Tool, grepper.Tool}, codesearcher.Tools...))
 	return &aflow.Flow{
 		Name: name,
 		Root: aflow.Pipeline(
@@ -50,7 +51,7 @@ func createPatchingFlow(name string, summaryWindow int) *aflow.Flow {
 				Name:          "debugger",
 				Model:         aflow.BestExpensiveModel,
 				Reply:         "BugExplanation",
-				Temperature:   1,
+				TaskType:      aflow.FormalReasoningTask,
 				Instruction:   debuggingInstruction,
 				Prompt:        debuggingPrompt,
 				Tools:         commonTools,
@@ -63,7 +64,7 @@ func createPatchingFlow(name string, summaryWindow int) *aflow.Flow {
 						Name:          "patch-generator",
 						Model:         aflow.BestExpensiveModel,
 						Reply:         "PatchExplanation",
-						Temperature:   1,
+						TaskType:      aflow.FormalReasoningTask,
 						Instruction:   patchInstruction,
 						Prompt:        patchPrompt,
 						Tools:         append(commonTools, codeeditor.Tool),
@@ -80,7 +81,7 @@ func createPatchingFlow(name string, summaryWindow int) *aflow.Flow {
 				Name:          "description-generator",
 				Model:         aflow.BestExpensiveModel,
 				Reply:         "PatchDescription",
-				Temperature:   1,
+				TaskType:      aflow.FormalReasoningTask,
 				Instruction:   descriptionInstruction,
 				Prompt:        descriptionPrompt,
 				Tools:         commonTools,

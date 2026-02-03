@@ -468,7 +468,7 @@ func (inst *instance) boot() error {
 		tee = os.Stdout
 	}
 	inst.merger = vmimpl.NewOutputMerger(tee)
-	inst.merger.Add("qemu", inst.rpipe)
+	inst.merger.Add("qemu", vmimpl.OutputConsole, inst.rpipe)
 	inst.rpipe = nil
 
 	var bootOutput []byte
@@ -477,7 +477,7 @@ func (inst *instance) boot() error {
 		for {
 			select {
 			case out := <-inst.merger.Output:
-				bootOutput = append(bootOutput, out...)
+				bootOutput = append(bootOutput, out.Data...)
 			case <-bootOutputStop:
 				close(bootOutputStop)
 				return
@@ -679,12 +679,19 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 }
 
 func (inst *instance) Run(ctx context.Context, command string) (
-	<-chan []byte, <-chan error, error) {
+	<-chan vmimpl.Chunk, <-chan error, error) {
 	rpipe, wpipe, err := osutil.LongPipe()
 	if err != nil {
 		return nil, nil, err
 	}
-	inst.merger.Add("ssh", rpipe)
+	rpipeErr, wpipeErr, err := osutil.LongPipe()
+	if err != nil {
+		rpipe.Close()
+		wpipe.Close()
+		return nil, nil, err
+	}
+	inst.merger.Add("ssh", vmimpl.OutputStdout, rpipe)
+	inst.merger.Add("ssh-err", vmimpl.OutputStderr, rpipeErr)
 
 	sshArgs := vmimpl.SSHArgsForward(inst.debug, inst.Key, inst.Port, inst.forwardPort, false)
 	args := strings.Split(command, " ")
@@ -712,9 +719,10 @@ func (inst *instance) Run(ctx context.Context, command string) (
 	cmd := osutil.Command(args[0], args[1:]...)
 	cmd.Dir = inst.workdir
 	cmd.Stdout = wpipe
-	cmd.Stderr = wpipe
+	cmd.Stderr = wpipeErr
 	if err := cmd.Start(); err != nil {
 		wpipe.Close()
+		wpipeErr.Close()
 		return nil, nil, err
 	}
 	wpipe.Close()
