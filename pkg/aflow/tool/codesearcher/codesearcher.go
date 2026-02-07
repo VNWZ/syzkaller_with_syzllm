@@ -11,6 +11,7 @@ import (
 	"github.com/google/syzkaller/pkg/clangtool"
 	"github.com/google/syzkaller/pkg/codesearch"
 	"github.com/google/syzkaller/pkg/hash"
+	"github.com/google/syzkaller/tools/clang/codesearch"
 )
 
 var Tools = []aflow.Tool{
@@ -68,11 +69,10 @@ You can strictly trust the response to be complete and accurate.
 var PrepareIndex = aflow.NewFuncAction("codesearch-prepare", prepare)
 
 type prepareArgs struct {
-	KernelCommit      string
-	KernelConfig      string
-	KernelSrc         string
-	KernelObj         string
-	CodesearchToolBin string
+	KernelCommit string
+	KernelConfig string
+	KernelSrc    string
+	KernelObj    string
 }
 
 type prepareResult struct {
@@ -154,7 +154,7 @@ func prepare(ctx *aflow.Context, args prepareArgs) (prepareResult, error) {
 		args.KernelCommit, hash.String(args.KernelConfig), codesearch.DatabaseFormatHash)
 	dir, err := ctx.Cache("codesearch", desc, func(dir string) error {
 		cfg := &clangtool.Config{
-			ToolBin:   args.CodesearchToolBin,
+			Tool:      clangtoolimpl.Tool,
 			KernelSrc: args.KernelSrc,
 			KernelObj: args.KernelObj,
 			CacheFile: filepath.Join(dir, "index.json"),
