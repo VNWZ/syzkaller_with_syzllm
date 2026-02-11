@@ -10,13 +10,14 @@ import (
 )
 
 type Series struct {
-	ID          string `spanner:"ID"`
-	ExtID       string `spanner:"ExtID"`
-	AuthorName  string `spanner:"AuthorName"`
-	AuthorEmail string `spanner:"AuthorEmail"`
-	Title       string `spanner:"Title"`
-	Link        string `spanner:"Link"`
-	Version     int64  `spanner:"Version"`
+	ID             string             `spanner:"ID"`
+	ExtID          string             `spanner:"ExtID"`
+	AuthorName     string             `spanner:"AuthorName"`
+	AuthorEmail    string             `spanner:"AuthorEmail"`
+	Title          string             `spanner:"Title"`
+	Link           string             `spanner:"Link"`
+	Version        int64              `spanner:"Version"`
+	BaseCommitHint spanner.NullString `spanner:"BaseCommitHint"`
 	// In LKML patches, there are often hints at the target tree for the patch.
 	SubjectTags []string  `spanner:"SubjectTags"`
 	PublishedAt time.Time `spanner:"PublishedAt"`
@@ -86,7 +87,8 @@ const (
 	SessionStatusFinished   SessionStatus = "finished"
 	SessionStatusSkipped    SessionStatus = "skipped"
 	// To be used in filters.
-	SessionStatusAny SessionStatus = ""
+	SessionStatusAny         SessionStatus = ""
+	SessionStatusStepsFailed SessionStatus = "steps_failed"
 )
 
 // It could have been a calculated field in Spanner, but the Go library for Spanner currently
