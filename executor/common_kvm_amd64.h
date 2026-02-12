@@ -515,10 +515,9 @@ static void setup_gdt_ldt_pg(struct kvm_syz_vm* vm, int cpufd, int cpu_id)
 	// RSP0 is at offset +4 bytes in a 64-bit TSS.
 	*(volatile uint64*)(l1_tss + 4) = X86_SYZOS_ADDR_STACK0;
 
-	setup_gdt_64(gdt);
-
-	syzos_setup_idt(vm, &sregs);
 	setup_pg_table(vm);
+	setup_gdt_64(gdt);
+	syzos_setup_idt(vm, &sregs);
 
 	sregs.cr0 = X86_CR0_PE | X86_CR0_NE | X86_CR0_PG;
 	sregs.cr4 |= X86_CR4_PAE | X86_CR4_OSFXSR;
@@ -1288,6 +1287,9 @@ static void dump_vcpu_state(int cpufd, struct kvm_run* run)
 	fprintf(stderr, "VCPU registers:\n");
 	fprintf(stderr, "  rip: 0x%llx, rsp: 0x%llx, rflags: 0x%llx\n", regs.rip,
 		regs.rsp, regs.rflags);
+	fprintf(stderr, "  rax: 0x%llx, rbx: 0x%llx, rcx: 0x%llx, rdx: 0x%llx\n",
+		regs.rax, regs.rbx, regs.rcx, regs.rdx);
+	fprintf(stderr, "  rsi: 0x%llx, rdi: 0x%llx\n", regs.rsi, regs.rdi);
 	fprintf(stderr, "VCPU sregs:\n");
 	fprintf(stderr, "  cr0: 0x%llx, cr2: 0x%llx, cr3: 0x%llx, cr4: 0x%llx\n",
 		sregs.cr0, sregs.cr2, sregs.cr3, sregs.cr4);
