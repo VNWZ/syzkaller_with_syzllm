@@ -764,10 +764,12 @@ type BaseCommit struct {
 	Branches []string
 }
 
-// BaseForDiff returns a list of commits that could have been the base commit
-// for the specified git patch.
-// The returned list is minimized to only contain the commits that are represented in different
-// subsets of branches.
+// BaseForDiff returns a list of commits that could have been the base
+// commit for the specified git patch.
+// For the purposes of optimization, the function only considers the
+// commits that are newer than one year.
+// The returned list is minimized to only contain the commits that are
+// represented in different subsets of branches.
 func (git Git) BaseForDiff(diff []byte, tracer debugtracer.DebugTracer) ([]*BaseCommit, error) {
 	// We can't just query git log with --find-object=HASH because that will only return
 	// the revisions where the hashed content was introduced or removed, while what we actually
@@ -782,8 +784,13 @@ func (git Git) BaseForDiff(diff []byte, tracer debugtracer.DebugTracer) ([]*Base
 		"log",
 		"--all",
 		"--no-renames",
-		// Note that we cannot accelerate it by specifying "--since"
-		"-n", "100",
+		"-m",
+		"-n", "500",
+		// With -m and -n 500, de facto we have scan all repo commits, which takes
+		// significant time on a Linux kernel checkout.
+		// If the blob hashes haven't been touched since one year, any reasonably
+		// fresh kernel branch will pass, so BaseForDiff is not really needed.
+		`--since="1 year ago"`,
 		`--format=%H:%P`,
 	}
 	var fileNames []string
@@ -834,21 +841,21 @@ func (git Git) BaseForDiff(diff []byte, tracer debugtracer.DebugTracer) ([]*Base
 		// TODO: we can further reduce the search space by adding "--raw" to args
 		// and only considering the commits that introduce the blobs from the diff.
 		commit, parents, _ := strings.Cut(s.Text(), ":")
-		// Focus on the first parent.
-		candidate, _, _ := strings.Cut(parents, " ")
-		if candidate == "" {
-			// For the first commit, there's no parent.
-			candidate = commit
+		candidates := []string{commit}
+		if parents != "" {
+			candidates = append(candidates, strings.Split(parents, " ")...)
 		}
-		// Only focus on branches that are still alive.
-		const cutOffDays = 60
-		list, err := git.BranchesThatContain(candidate, time.Now().Add(-time.Hour*24*cutOffDays))
-		if err != nil {
-			return nil, fmt.Errorf("failed to query branches: %w", err)
-		}
-		for _, info := range list {
-			record(candidate, info.Branch)
-			record(info.Commit, info.Branch)
+		for _, candidate := range candidates {
+			// Only focus on branches that are still alive.
+			const cutOffDays = 60
+			list, err := git.BranchesThatContain(candidate, time.Now().Add(-time.Hour*24*cutOffDays))
+			if err != nil {
+				return nil, fmt.Errorf("failed to query branches: %w", err)
+			}
+			for _, info := range list {
+				record(candidate, info.Branch)
+				record(info.Commit, info.Branch)
+			}
 		}
 	}
 	var ret []*BaseCommit
