@@ -5,7 +5,9 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +69,7 @@ func TestAIBugWorkflows(t *testing.T) {
 	requireWorkflows(kcsanBug, nil)
 	requireWorkflows(kasanBug, nil)
 
-	_, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	_, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: "patching", Name: "patching"},
@@ -80,7 +82,7 @@ func TestAIBugWorkflows(t *testing.T) {
 	// This should make patching-foo inactive.
 	c.advanceTime(2 * 24 * time.Hour)
 
-	_, err = c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	_, err = c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: "patching", Name: "patching"},
@@ -91,7 +93,7 @@ func TestAIBugWorkflows(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	_, err = c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: "patching", Name: "patching"},
@@ -107,6 +109,83 @@ func TestAIBugWorkflows(t *testing.T) {
 	requireWorkflows(kasanBug, []string{"patching", "patching-bar", "patching-baz", "patching-qux"})
 }
 
+func TestAIRestrictedClient(t *testing.T) {
+	c := NewSpannerCtx(t)
+	defer c.Close()
+
+	c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+		},
+	})
+
+	build := testBuild(1)
+	c.aiClient.UploadBuild(build)
+	crash := testCrashWithRepro(build, 1)
+	c.aiClient.ReportCrash(crash)
+	extID := c.aiClient.pollEmailExtID()
+	bug, _, _ := c.loadBug(extID)
+
+	_, err := c.POSTForm(fmt.Sprintf("/bug?id=%v", bug.keyHash(c.ctx)),
+		url.Values{"ai-job-create": []string{"patching"}})
+	require.NoError(t, err)
+
+	restrictedClient := c.makeClient(agentRestrictedClient, agentRestrictedKey, false)
+	_, err = restrictedClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+		},
+	})
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(),
+		`the client is not allowed to execute AI jobs without "-foobar" suffix`))
+
+	job, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, job.ID != "")
+
+	job, err = restrictedClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching-foobar"},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, job.ID, "")
+
+	_, err = c.POSTForm(fmt.Sprintf("/bug?id=%v", bug.keyHash(c.ctx)),
+		url.Values{"ai-job-create": []string{"patching-foobar"}})
+	require.NoError(t, err)
+
+	job, err = restrictedClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching-foobar"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, job.ID != "")
+	require.Equal(t, job.Workflow, "patching-foobar")
+
+	_, err = restrictedClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+			{Type: "patching", Name: "patching-foobar"},
+		},
+	})
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(),
+		`the client is not allowed to execute AI jobs without "-foobar" suffix`))
+}
+
 func TestAIJob(t *testing.T) {
 	c := NewSpannerCtx(t)
 	defer c.Close()
@@ -118,7 +197,7 @@ func TestAIJob(t *testing.T) {
 	c.aiClient.ReportCrash(crash)
 	c.aiClient.pollEmailBug()
 
-	resp, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	resp, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: "assessment-kcsan", Name: "assessment-kcsan"},
@@ -137,7 +216,7 @@ func TestAIJob(t *testing.T) {
 		"ReproOpts":       "",
 	})
 
-	resp2, err2 := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	resp2, err2 := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: "assessment-kcsan", Name: "assessment-kcsan"},
@@ -146,7 +225,7 @@ func TestAIJob(t *testing.T) {
 	require.NoError(t, err2)
 	require.Equal(t, resp2.ID, "")
 
-	require.NoError(t, c.globalClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
+	require.NoError(t, c.agentClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
 		JobID: resp.ID,
 		Span: &trajectory.Span{
 			Seq:     0,
@@ -156,7 +235,7 @@ func TestAIJob(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, c.globalClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
+	require.NoError(t, c.agentClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
 		JobID: resp.ID,
 		Span: &trajectory.Span{
 			Seq:     1,
@@ -167,7 +246,7 @@ func TestAIJob(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, c.globalClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
+	require.NoError(t, c.agentClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
 		JobID: resp.ID,
 		Span: &trajectory.Span{
 			Seq:      1,
@@ -180,7 +259,7 @@ func TestAIJob(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, c.globalClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
+	require.NoError(t, c.agentClient.AITrajectoryLog(&dashapi.AITrajectoryReq{
 		JobID: resp.ID,
 		Span: &trajectory.Span{
 			Seq:      0,
@@ -191,7 +270,7 @@ func TestAIJob(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, c.globalClient.AIJobDone(&dashapi.AIJobDoneReq{
+	require.NoError(t, c.agentClient.AIJobDone(&dashapi.AIJobDoneReq{
 		ID: resp.ID,
 		Results: map[string]any{
 			"Patch":       "patch",
@@ -200,6 +279,54 @@ func TestAIJob(t *testing.T) {
 			"Bool":        true,
 		},
 	}))
+}
+
+func TestAIJobActions(t *testing.T) {
+	c := NewSpannerCtx(t)
+	defer c.Close()
+
+	build := testBuild(1)
+	c.aiClient.UploadBuild(build)
+	crash := testCrashWithRepro(build, 1)
+	c.aiClient.ReportCrash(crash)
+	extID := c.aiClient.pollEmailExtID()
+	bug, _, _ := c.loadBug(extID)
+
+	_, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+		},
+	})
+	require.NoError(t, err)
+
+	jobCreateURL := fmt.Sprintf("/bug?id=%v&ai-job-create=patching", bug.keyHash(c.ctx))
+	_, err = c.AuthGET(AccessPublic, jobCreateURL)
+	require.Error(t, err)
+	// Redirect to login page.
+	require.Contains(t, err.Error(), fmt.Sprint(http.StatusTemporaryRedirect))
+	_, err = c.AuthGET(AccessUser, jobCreateURL)
+	require.NoError(t, err)
+
+	resp, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: "patching", Name: "patching"},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, c.globalClient.AIJobDone(&dashapi.AIJobDoneReq{
+		ID:      resp.ID,
+		Results: map[string]any{"Patch": "patch"},
+	}))
+
+	jobAssessURL := fmt.Sprintf("/ai_job?id=%v&correct=correct", resp.ID)
+	_, err = c.AuthGET(AccessPublic, jobAssessURL)
+	require.Error(t, err)
+	// Redirect to login page.
+	require.Contains(t, err.Error(), fmt.Sprint(http.StatusTemporaryRedirect))
+	_, err = c.AuthGET(AccessUser, jobAssessURL)
+	require.NoError(t, err)
 }
 
 func TestAIAssessmentKCSAN(t *testing.T) {
@@ -213,7 +340,7 @@ func TestAIAssessmentKCSAN(t *testing.T) {
 	c.aiClient.ReportCrash(crash)
 	extID := c.aiClient.pollEmailExtID()
 
-	resp, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	resp, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: ai.WorkflowAssessmentKCSAN, Name: string(ai.WorkflowAssessmentKCSAN)},
@@ -229,7 +356,7 @@ func TestAIAssessmentKCSAN(t *testing.T) {
 	_, err = c.GET(fmt.Sprintf("/ai_job?id=%v&correct=%v", resp.ID, aiCorrectnessCorrect))
 	require.Error(t, err)
 
-	require.NoError(t, c.globalClient.AIJobDone(&dashapi.AIJobDoneReq{
+	require.NoError(t, c.agentClient.AIJobDone(&dashapi.AIJobDoneReq{
 		ID: resp.ID,
 		Results: map[string]any{
 			"Confident":   true,
@@ -285,7 +412,7 @@ func TestAIJobsFiltering(t *testing.T) {
 	c.aiClient.ReportCrash(crash)
 	c.aiClient.pollEmailBug()
 
-	pollResp, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	pollResp, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: ai.WorkflowAssessmentKCSAN, Name: string(ai.WorkflowAssessmentKCSAN)},
@@ -322,7 +449,7 @@ func TestAIJobCustomCommit(t *testing.T) {
 	extID := c.aiClient.pollEmailExtID()
 	bug, _, _ := c.loadBug(extID)
 
-	_, err := c.globalClient.AIJobPoll(&dashapi.AIJobPollReq{
+	_, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
 			{Type: ai.WorkflowPatching, Name: "patching"},
@@ -330,13 +457,7 @@ func TestAIJobCustomCommit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	vals := url.Values{}
-	vals.Add("ai-job-create", string(ai.WorkflowPatching))
-	vals.Add("base_commit_type", "custom")
-	vals.Add("base_commit", "custom123")
-
-	_, err = c.POSTForm(fmt.Sprintf("/bug?id=%v", bug.keyHash(c.ctx)), vals)
-	require.NoError(t, err)
+	c.createAIJob(extID, string(ai.WorkflowPatching), "custom123")
 
 	jobs, err := aidb.LoadBugJobs(c.ctx, bug.keyHash(c.ctx))
 	require.NoError(t, err)

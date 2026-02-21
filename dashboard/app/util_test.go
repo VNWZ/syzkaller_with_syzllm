@@ -38,6 +38,7 @@ import (
 	"github.com/google/syzkaller/pkg/email"
 	"github.com/google/syzkaller/pkg/subsystem"
 	spannertest "github.com/google/syzkaller/syz-cluster/pkg/db"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/appengine/v2"
 	"google.golang.org/appengine/v2/aetest"
 	db "google.golang.org/appengine/v2/datastore"
@@ -53,6 +54,7 @@ type Ctx struct {
 	emailSink        chan *aemail.Message
 	transformContext func(context.Context) context.Context
 	globalClient     *apiClient
+	agentClient      *apiClient
 	client           *apiClient
 	client2          *apiClient
 	publicClient     *apiClient
@@ -99,6 +101,7 @@ func newCtx(t *testing.T, appID string) *Ctx {
 		checkAI:          appID != "",
 	}
 	ctx.globalClient = ctx.makeClient(reportingClient, reportingKey, true)
+	ctx.agentClient = ctx.makeClient(agentClient, agentKey, true)
 	ctx.client = ctx.makeClient(client1, password1, true)
 	ctx.client2 = ctx.makeClient(client2, password2, true)
 	ctx.publicClient = ctx.makeClient(clientPublicEmail, keyPublicEmail, true)
@@ -258,7 +261,8 @@ func caller(skip int) string {
 
 func (ctx *Ctx) Close() {
 	defer ctx.inst.Close()
-	if !ctx.t.Failed() {
+	// transformContext may substitute config.
+	if ctx.transformContext == nil && !ctx.t.Failed() {
 		// To avoid per-day reporting limits for left-over emails.
 		ctx.advanceTime(25 * time.Hour)
 		// Ensure that we can render main page and all bugs in the final test state.
@@ -767,6 +771,17 @@ Content-Type: text/plain
 	log.Infof(ctx.ctx, "sending %s", email)
 	_, err := ctx.POST("/_ah/mail/"+to, email)
 	ctx.expectOK(err)
+}
+
+func (ctx *Ctx) createAIJob(bugExitID, workflow, baseCommit string) string {
+	bug, _, _ := ctx.loadBug(bugExitID)
+	args := map[string]any{}
+	if baseCommit != "" {
+		args["FixedBaseCommit"] = baseCommit
+	}
+	id, err := aiBugJobCreate(ctx.ctx, workflow, bug, args)
+	require.NoError(ctx.t, err)
+	return id
 }
 
 func initMocks() {
