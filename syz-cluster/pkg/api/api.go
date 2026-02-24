@@ -10,14 +10,15 @@ type TriageResult struct {
 	// If set, ignore the patch series completely.
 	SkipReason string `json:"skip_reason"`
 	// Fuzzing configuration to try (NULL if nothing).
-	Fuzz []*FuzzTask `json:"fuzz"`
+	Targets []*TestTarget `json:"targets"`
 }
 
-// The data layout faclitates the simplicity of the workflow definition.
-type FuzzTask struct {
+// TestTarget groups the testing tasks that share the same base/patched builds.
+type TestTarget struct {
 	Base    BuildRequest `json:"base"`
 	Patched BuildRequest `json:"patched"`
-	FuzzConfig
+	Track   string       `json:"track"` // E.g. KASAN.
+	Fuzz    *FuzzConfig  `json:"fuzz"`
 }
 
 const (
@@ -31,7 +32,6 @@ const (
 // FuzzConfig represents a set of parameters passed to the fuzz step.
 // The triage step aggregates multiple KernelFuzzConfig to construct FuzzConfig.
 type FuzzConfig struct {
-	Track      string   `json:"track"` // E.g. KASAN.
 	Focus      []string `json:"focus"`
 	CorpusURLs []string `json:"corpus_urls"`
 	// Don't expect kernel coverage for the patched area.
@@ -101,7 +101,7 @@ const (
 	TestError   string = "error"
 )
 
-type TestResult struct {
+type SessionTest struct {
 	SessionID      string `json:"session_id"`
 	BaseBuildID    string `json:"base_build_id"`
 	PatchedBuildID string `json:"patched_build_id"`
