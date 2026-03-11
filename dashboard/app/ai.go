@@ -56,6 +56,7 @@ type uiAIJob struct {
 	Workflow         string
 	Description      string
 	DescriptionLink  string
+	AgentName        string
 	Created          time.Time
 	Started          time.Time
 	Finished         time.Time
@@ -131,7 +132,7 @@ func handleAIJobsPage(ctx context.Context, w http.ResponseWriter, r *http.Reques
 			uiJobs = append(uiJobs, makeUIAIJob(job))
 		}
 	}
-	workflows, err := aidb.LoadWorkflows(ctx)
+	workflows, err := aidb.LoadActiveWorkflows(ctx)
 	if err != nil {
 		return err
 	}
@@ -302,6 +303,7 @@ func makeUIAIJob(job *aidb.Job) *uiAIJob {
 		Workflow:         job.Workflow,
 		Description:      job.Description,
 		DescriptionLink:  job.Link,
+		AgentName:        nullString(job.AgentName),
 		Created:          job.Created,
 		Started:          nullTime(job.Started),
 		Finished:         nullTime(job.Finished),
@@ -367,8 +369,11 @@ func makeUIJobReviewHistory(history []*aidb.Journal) []*uiJobReviewHistory {
 }
 
 func apiAIJobPoll(ctx context.Context, req *dashapi.AIJobPollReq) (any, error) {
-	if len(req.Workflows) == 0 || req.CodeRevision == "" {
+	if len(req.Workflows) == 0 || req.CodeRevision == "" || req.AgentName == "" {
 		return nil, fmt.Errorf("invalid request")
+	}
+	if err := aidb.AgentIsAlive(ctx, req.AgentName); err != nil {
+		log.Errorf(ctx, "failed to update agent %q: %v", req.AgentName, err)
 	}
 	for _, flow := range req.Workflows {
 		if flow.Type == "" || flow.Name == "" {
@@ -378,24 +383,15 @@ func apiAIJobPoll(ctx context.Context, req *dashapi.AIJobPollReq) (any, error) {
 			return nil, err
 		}
 	}
-	if err := aidb.UpdateWorkflows(ctx, req.Workflows); err != nil {
+	if err := aidb.UpdateWorkflows(ctx, req.AgentName, req.Workflows); err != nil {
 		return nil, fmt.Errorf("failed UpdateWorkflows: %w", err)
 	}
-	job, err := aidb.StartJob(ctx, req)
+	job, err := pollAIJob(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed StartJob: %w", err)
+		return nil, err
 	}
 	if job == nil {
-		if created, err := autoCreateAIJobs(ctx); err != nil || !created {
-			return &dashapi.AIJobPollResp{}, err
-		}
-		job, err = aidb.StartJob(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed StartJob: %w", err)
-		}
-		if job == nil {
-			return &dashapi.AIJobPollResp{}, nil
-		}
+		return &dashapi.AIJobPollResp{}, nil
 	}
 	if !job.Args.Valid {
 		job.Args.Value = map[string]any{}
@@ -438,6 +434,31 @@ func apiAIJobPoll(ctx context.Context, req *dashapi.AIJobPollReq) (any, error) {
 		Workflow: job.Workflow,
 		Args:     args,
 	}, nil
+}
+
+func pollAIJob(ctx context.Context, req *dashapi.AIJobPollReq) (*aidb.Job, error) {
+	job, err := aidb.StartJob(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed StartJob: %w", err)
+	}
+	if job != nil {
+		return job, nil
+	}
+	job, err = aidb.NextStaleJob(ctx, req)
+	if err != nil {
+		log.Errorf(ctx, "NextStaleJob failed: %v", err)
+	}
+	if job != nil {
+		return job, nil
+	}
+	if created, err := autoCreateAIJobs(ctx); err != nil || !created {
+		return nil, err
+	}
+	job, err = aidb.StartJob(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed StartJob after autoCreate: %w", err)
+	}
+	return job, nil
 }
 
 func apiAIJobDone(ctx context.Context, req *dashapi.AIJobDoneReq) (any, error) {
@@ -574,6 +595,11 @@ func parseJSON[T any](val spanner.NullJSON) (T, error) {
 }
 
 func apiAITrajectoryLog(ctx context.Context, req *dashapi.AITrajectoryReq) (any, error) {
+	if req.AgentName != "" {
+		if err := aidb.AgentIsAlive(ctx, req.AgentName); err != nil {
+			log.Errorf(ctx, "failed to update agent %q: %v", req.AgentName, err)
+		}
+	}
 	err := aidb.StoreTrajectorySpan(ctx, req.JobID, req.Span)
 	return nil, err
 }
@@ -585,7 +611,7 @@ type uiWorkflow struct {
 
 // aiBugWorkflows returns active workflows that are applicable for the bug.
 func aiBugWorkflows(ctx context.Context, bug *Bug) ([]*uiWorkflow, error) {
-	workflows, err := aidb.LoadWorkflows(ctx)
+	workflows, err := aidb.LoadActiveWorkflows(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -609,7 +635,7 @@ func aiBugWorkflows(ctx context.Context, bug *Bug) ([]*uiWorkflow, error) {
 // aiBugWorkflows returns active workflows that are applicable for the bug.
 
 func aiBugJobCreate(ctx context.Context, workflow string, bug *Bug, extraArgs map[string]any) (string, error) {
-	workflows, err := aidb.LoadWorkflows(ctx)
+	workflows, err := aidb.LoadActiveWorkflows(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -743,7 +769,7 @@ func autoCreateAIJob(ctx context.Context, bug *Bug, bugKey *db.Key) (bool, error
 		// Have finished successful job.
 		if job.Finished.Valid && job.Error == "" ||
 			// Or already have a pending or a running job.
-			!job.Started.Valid || timeSince(ctx, job.Started.Time) < 24*time.Hour {
+			!job.Finished.Valid {
 			// Don't create new jobs for these types.
 			delete(workflows, typ)
 			continue

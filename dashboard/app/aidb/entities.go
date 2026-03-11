@@ -18,9 +18,20 @@ type JobReviewDetails struct {
 	Correct bool
 }
 
-type Workflow struct {
+type ActiveWorkflow struct {
 	Name       string
 	Type       ai.WorkflowType
+	LastActive time.Time
+}
+
+type Workflow struct {
+	AgentName string
+	Name      string
+	Type      ai.WorkflowType
+}
+
+type Agent struct {
+	AgentName  string
 	LastActive time.Time
 }
 
@@ -38,6 +49,7 @@ type Job struct {
 	Finished     spanner.NullTime
 	CodeRevision string // syzkaller revision, filled when the job is started
 	Error        string // for finished jobs
+	AgentName    spanner.NullString
 	Args         spanner.NullJSON
 	Results      spanner.NullJSON
 	Correct      spanner.NullBool
