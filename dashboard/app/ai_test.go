@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/google/syzkaller/dashboard/app/aidb"
 	"github.com/google/syzkaller/dashboard/dashapi"
@@ -545,45 +548,87 @@ func TestAIJobAutoCreate(t *testing.T) {
 	require.Equal(t, pollResp7.ID, "")
 }
 
-func TestAIRepro(t *testing.T) {
+func TestAIPendingJobs(t *testing.T) {
 	c := NewSpannerCtx(t)
 	defer c.Close()
 
 	build := testBuild(1)
 	c.aiClient.UploadBuild(build)
-	crash := testCrash(build, 1)
-	c.aiClient.ReportCrash(crash)
-	c.aiClient.pollEmailExtID()
 
-	pollReq := &dashapi.AIJobPollReq{
-		AgentName:    "agent-repro",
+	crash := testCrash(build, 1)
+	crash.Title = "KCSAN: data-race in foo / bar"
+	c.aiClient.ReportCrash(crash)
+	extID := c.aiClient.pollEmailExtID()
+	// Initial poll for only "patching". Ensures "assessment-kcsan" is left in pending.
+	pollResp, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
+		AgentName:    "patching-agent",
 		CodeRevision: prog.GitRevision,
 		Workflows: []dashapi.AIWorkflow{
-			{Type: ai.WorkflowRepro, Name: string(ai.WorkflowRepro)},
+			{Type: ai.WorkflowPatching, Name: "patching-job"},
 		},
-	}
-	// No job should be created initially.
-	pollResp0, _ := c.agentClient.AIJobPoll(pollReq)
-	require.Equal(t, pollResp0.ID, "")
-
-	c.advanceTime(15 * 24 * time.Hour)
-	pollResp2, _ := c.agentClient.AIJobPoll(pollReq)
-	require.NotEqual(t, pollResp2.ID, "")
-	require.Equal(t, pollResp2.Args["CrashLog"], "log1")
-
-	c.agentClient.AIJobDone(&dashapi.AIJobDoneReq{
-		ID: pollResp2.ID,
 	})
+	require.NoError(t, err)
+	require.Empty(t, pollResp.ID) // No patching jobs for KCSAN
 
-	// A second bug with a repro.
-	crash2 := testCrashWithRepro(build, 2)
-	c.aiClient.ReportCrash(crash2)
-	c.aiClient.pollEmailExtID()
+	// No AI jobs should be created yet since the KCSAN workflow is just pending.
+	bug, _, _ := c.loadBug(extID)
+	jobs, err := aidb.LoadBugJobs(c.ctx, bug.keyHash(c.ctx))
+	require.NoError(t, err)
+	require.Empty(t, jobs)
 
-	c.advanceTime(15 * 24 * time.Hour)
-	// No AI job should be created.
-	pollResp4, _ := c.agentClient.AIJobPoll(pollReq)
-	require.Equal(t, pollResp4.ID, "")
+	// Poll for "assessment-kcsan" should pick up the pending job via Phase 1 fast-path.
+	pollRespKcsan, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
+		AgentName:    "kcsan-agent",
+		CodeRevision: prog.GitRevision,
+		Workflows: []dashapi.AIWorkflow{
+			{Type: ai.WorkflowAssessmentKCSAN, Name: "kcsan-job"},
+		},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, pollRespKcsan.ID)
+	require.Equal(t, "kcsan-job", pollRespKcsan.Workflow)
+}
+
+func TestAIJobParallelPoll(t *testing.T) {
+	c := NewSpannerCtx(t)
+	defer c.Close()
+
+	build := testBuild(1)
+	c.aiClient.UploadBuild(build)
+
+	crash := testCrash(build, 1)
+	crash.Title = "KCSAN: data-race in foo / bar"
+	c.aiClient.ReportCrash(crash)
+	extID := c.aiClient.pollEmailExtID()
+
+	// Spawn multiple routines to poll for jobs concurrently.
+	var eg errgroup.Group
+	const numPollers = 15
+	var assignedJobs int32
+	for i := 0; i < numPollers; i++ {
+		eg.Go(func() error {
+			pollResp, err := c.agentClient.AIJobPoll(&dashapi.AIJobPollReq{
+				AgentName:    fmt.Sprintf("agent-%v", i),
+				CodeRevision: prog.GitRevision,
+				Workflows: []dashapi.AIWorkflow{
+					{Type: ai.WorkflowAssessmentKCSAN, Name: "kcsan-job"},
+				},
+			})
+			if err == nil && pollResp.ID != "" {
+				atomic.AddInt32(&assignedJobs, 1)
+			}
+			return err
+		})
+	}
+	require.NoError(t, eg.Wait())
+
+	require.Equal(t, int32(1), assignedJobs)
+
+	// Ensure exactly 1 Job entity actually exists in the Datastore.
+	bug, _, _ := c.loadBug(extID)
+	jobs, err := aidb.LoadBugJobs(c.ctx, bug.keyHash(c.ctx))
+	require.NoError(t, err)
+	require.Equal(t, 1, len(jobs))
 }
 
 func TestAIAgentLastActive(t *testing.T) {
@@ -594,7 +639,7 @@ func TestAIAgentLastActive(t *testing.T) {
 	c.aiClient.UploadBuild(build)
 	crash := testCrash(build, 1)
 	c.aiClient.ReportCrash(crash)
-	c.aiClient.pollEmailExtID()
+	extID := c.aiClient.pollEmailExtID()
 
 	agentName := "test-agent-123"
 	pollReq := &dashapi.AIJobPollReq{
@@ -604,7 +649,9 @@ func TestAIAgentLastActive(t *testing.T) {
 			{Type: ai.WorkflowRepro, Name: string(ai.WorkflowRepro)},
 		},
 	}
-	c.advanceTime(15 * 24 * time.Hour)
+	c.agentClient.AIJobPoll(pollReq)
+	c.createAIJob(extID, string(ai.WorkflowRepro), "")
+	c.advanceTime(time.Hour)
 
 	// Poll, get the repro job and verify the last active timestamp.
 	pollResp, _ := c.agentClient.AIJobPoll(pollReq)
