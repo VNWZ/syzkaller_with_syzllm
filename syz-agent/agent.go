@@ -67,17 +67,20 @@ func main() {
 		flagExitOnUpgrade = flag.Bool("exit-on-upgrade", false,
 			"exit after a syz-ci upgrade is applied; otherwise syz-ci restarts")
 		flagAutoUpdate = flag.Bool("autoupdate", false, "auto-update the binary")
+		flagSyzkaller  = flag.String("syzkaller", "", "path to syzkaller checkout (bypasses updater)")
+		flagName       = flag.String("name", "", "agent name (must be unique!)")
 	)
 	defer tool.Init()()
 	log.SetName("syz-agent")
-	if err := run(*flagConfig, *flagExitOnUpgrade, *flagAutoUpdate); err != nil {
+	if err := run(*flagConfig, *flagExitOnUpgrade, *flagAutoUpdate,
+		*flagSyzkaller, *flagName); err != nil {
 		log.Fatal(err)
 	}
 }
 
 const workdir = "workdir"
 
-func run(configFile string, exitOnUpgrade, autoUpdate bool) error {
+func run(configFile string, exitOnUpgrade, autoUpdate bool, syzkallerDir, name string) error {
 	cfg := &Config{
 		SyzkallerRepo:   "https://github.com/google/syzkaller.git",
 		SyzkallerBranch: "master",
@@ -86,6 +89,9 @@ func run(configFile string, exitOnUpgrade, autoUpdate bool) error {
 	if err := config.LoadFile(configFile, cfg); err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	if name == "" {
+		return fmt.Errorf("agent name must be specified")
+	}
 	kernelConfig, err := os.ReadFile(cfg.KernelConfig)
 	if err != nil {
 		return err
@@ -93,45 +99,22 @@ func run(configFile string, exitOnUpgrade, autoUpdate bool) error {
 	cfg.kernelConfigData = string(kernelConfig)
 
 	tool.ServeHTTP(cfg.HTTP)
-	os, vmarch, arch, _, _, err := mgrconfig.SplitTarget(cfg.Target)
-	if err != nil {
-		return err
+
+	var updatePending, shutdownPending chan struct{}
+	var upd *updater.Updater
+
+	if syzkallerDir == "" {
+		upd, err = setupUpdater(cfg, cfg.Target, exitOnUpgrade)
+		if err != nil {
+			return err
+		}
+		syzkallerDir = filepath.FromSlash("syzkaller/current")
 	}
-	buildSem := osutil.NewSemaphore(1)
-	updater, err := updater.New(&updater.Config{
-		ReportBuildError: func(commit *vcs.Commit, _ string, buildErr error) {
-			reportBuildError(commit, buildErr)
-		},
-		ExitOnUpdate:    exitOnUpgrade,
-		BuildSem:        buildSem,
-		SyzkallerRepo:   cfg.SyzkallerRepo,
-		SyzkallerBranch: cfg.SyzkallerBranch,
-		Targets: map[updater.Target]bool{
-			{
-				OS:     os,
-				VMArch: vmarch,
-				Arch:   arch,
-			}: true,
-		},
-		MakeTargets: []string{"agent"},
-	})
-	if err != nil {
-		return err
-	}
+
 	cache, err := aflow.NewCache(filepath.Join(workdir, "cache"), cfg.CacheSize)
 	if err != nil {
 		return err
 	}
-
-	if cfg.MCP {
-		http.Handle("/", mcpHandler(cfg, cache))
-		select {}
-	}
-
-	updatePending := make(chan struct{})
-	shutdownPending := make(chan struct{})
-	osutil.HandleInterrupts(shutdownPending)
-	updater.UpdateOnStart(autoUpdate, updatePending, shutdownPending)
 
 	dash, err := dashapi.New(cfg.DashboardClient, cfg.DashboardAddr, cfg.DashboardKey)
 	if err != nil {
@@ -139,11 +122,25 @@ func run(configFile string, exitOnUpgrade, autoUpdate bool) error {
 	}
 
 	s := &Server{
+		name:            name,
 		cfg:             cfg,
 		dash:            dash,
 		cache:           cache,
 		workdir:         workdir,
+		syzkallerDir:    syzkallerDir,
 		overQuotaModels: make(map[string]time.Time),
+	}
+
+	if cfg.MCP {
+		http.Handle("/", mcpHandler(initState(cfg, syzkallerDir), workdir, cache))
+		select {}
+	}
+
+	shutdownPending = make(chan struct{})
+	osutil.HandleInterrupts(shutdownPending)
+	if upd != nil {
+		updatePending = make(chan struct{})
+		upd.UpdateOnStart(autoUpdate, updatePending, shutdownPending)
 	}
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -181,7 +178,9 @@ func run(configFile string, exitOnUpgrade, autoUpdate bool) error {
 	select {
 	case <-shutdownPending:
 	default:
-		updater.UpdateAndRestart()
+		if upd != nil {
+			upd.UpdateAndRestart()
+		}
 	}
 	return nil
 }
@@ -202,19 +201,45 @@ func reportBuildError(commit *vcs.Commit, buildErr error) {
 		commit.Hash, title, path)
 }
 
+func setupUpdater(cfg *Config, target string, exitOnUpgrade bool) (*updater.Updater, error) {
+	osVal, vmarch, arch, _, _, err := mgrconfig.SplitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	buildSem := osutil.NewSemaphore(1)
+	return updater.New(&updater.Config{
+		ReportBuildError: func(commit *vcs.Commit, _ string, buildErr error) {
+			reportBuildError(commit, buildErr)
+		},
+		ExitOnUpdate:    exitOnUpgrade,
+		BuildSem:        buildSem,
+		SyzkallerRepo:   cfg.SyzkallerRepo,
+		SyzkallerBranch: cfg.SyzkallerBranch,
+		Targets: map[updater.Target]bool{
+			{
+				OS:     osVal,
+				VMArch: vmarch,
+				Arch:   arch,
+			}: true,
+		},
+		MakeTargets: []string{"agent"},
+	})
+}
+
 type Server struct {
+	name            string
 	cfg             *Config
 	dash            *dashapi.Dashboard
 	cache           *aflow.Cache
 	workdir         string
+	syzkallerDir    string
 	overQuotaModels map[string]time.Time
 }
 
 func (s *Server) poll(ctx context.Context) (bool, error) {
 	s.resetModelQuota()
-	agentName := s.cfg.DashboardClient
 	req := &dashapi.AIJobPollReq{
-		AgentName:    agentName,
+		AgentName:    s.name,
 		CodeRevision: prog.GitRevision,
 	}
 	for _, flow := range aflow.Flows {
@@ -285,7 +310,7 @@ func (s *Server) executeJob(ctx context.Context, req *dashapi.AIJobPollResp) (ma
 	if flow == nil {
 		return nil, fmt.Errorf("unsupported flow %q", req.Workflow)
 	}
-	inputs := initState(s.cfg)
+	inputs := initState(s.cfg, s.syzkallerDir)
 	maps.Insert(inputs, maps.All(req.Args))
 	onEvent := func(span *trajectory.Span) error {
 		log.Logf(0, "%v", span)
@@ -319,9 +344,9 @@ func (s *Server) resetModelQuota() {
 	}
 }
 
-func initState(cfg *Config) map[string]any {
+func initState(cfg *Config, syzkallerDir string) map[string]any {
 	return map[string]any{
-		"Syzkaller":       osutil.Abs(filepath.FromSlash("syzkaller/current")),
+		"Syzkaller":       osutil.Abs(syzkallerDir),
 		"Image":           cfg.Image,
 		"Type":            cfg.Type,
 		"VM":              cfg.VM,
