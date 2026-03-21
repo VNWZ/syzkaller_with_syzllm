@@ -2,16 +2,14 @@
 # Copyright 2024 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-FROM gcr.io/syzkaller/env AS build-action-builder
+ARG SMOKE_TEST=0
+ARG IMAGE_PREFIX=local/
+ARG IMAGE_TAG=latest
+FROM ${IMAGE_PREFIX}syz-cluster-build:${IMAGE_TAG} AS builder
 
-WORKDIR /build
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN go build -o /build/build-action-bin /build/syz-cluster/workflow/build
-
+# Regular setup (SMOKE_TEST=0)
 # Build on the latest syzbot image.
-FROM gcr.io/syzkaller/syzbot:latest
+FROM gcr.io/syzkaller/syzbot:latest AS setup-0
 
 # Download the base buildroot image.
 RUN mkdir -p /disk-images
@@ -29,6 +27,13 @@ RUN chmod 644 /kernel-configs/*
 RUN git config --system --add safe.directory /workdir
 RUN git config --system --add safe.directory /kernel-repo
 
-COPY --from=build-action-builder /build/build-action-bin /bin/build-action
+# Smoke test setup (SMOKE_TEST=1)
+FROM debian:bookworm-slim AS setup-1
+# Skip heavy syzbot image and downloads for smoke test
+RUN echo "Smoke test mode: skipping syzbot base and disk images"
 
-ENTRYPOINT ["/bin/series-tracker"]
+FROM setup-${SMOKE_TEST} AS final
+
+COPY --from=builder /build/syz-cluster/bin/build-action /bin/build-action
+
+ENTRYPOINT ["/bin/build-action"]

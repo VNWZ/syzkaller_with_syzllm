@@ -4,11 +4,10 @@
 resources:
   - service-accounts.yaml
   - kernel-disk-pvc.yaml
-  - ../common/argo
-  - ../common
-  - global-config.yaml
+  - ../../common/argo
   - global-config-env.yaml
   - fake-gcs.yaml
+  - cloud-spanner-emulator.yaml
   - network-policy-spanner.yaml
   - workflow-artifacts.yaml
 

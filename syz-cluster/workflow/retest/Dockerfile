@@ -2,18 +2,13 @@
 # Copyright 2026 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-FROM gcr.io/syzkaller/env AS retest-action-builder
-WORKDIR /build
+ARG SMOKE_TEST=0
+ARG IMAGE_PREFIX=local/
+ARG IMAGE_TAG=latest
+FROM ${IMAGE_PREFIX}syz-cluster-build:${IMAGE_TAG} AS builder
 
-# Copy the code and the dependencies.
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN make TARGETARCH=amd64
-RUN GO_FLAGS=$(make go-flags 2>/dev/null) && go build "$GO_FLAGS" -o /bin/retest-action /build/syz-cluster/workflow/retest
-
-FROM debian:bookworm
-
+# Regular setup (SMOKE_TEST=0)
+FROM debian:bookworm AS setup-0
 RUN apt-get update && \
     apt-get install -y qemu-system openssh-client curl cpp gcc
 
@@ -27,10 +22,17 @@ RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
 RUN update-alternatives --install /usr/bin/llvm-addr2line llvm-addr2line /usr/bin/llvm-addr2line-20 100
 RUN update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-20 100
 
+# Smoke test setup (SMOKE_TEST=1)
+FROM debian:bookworm-slim AS setup-1
+# Skip heavy installs for smoke test
+RUN echo "Smoke test mode: skipping dependencies"
+
+FROM setup-${SMOKE_TEST} AS final
+
 # pkg/osutil uses syzkaller user for sandboxing.
 RUN useradd --create-home syzkaller
 
-COPY --from=retest-action-builder /build/bin/ /syzkaller/bin/
-COPY --from=retest-action-builder /bin/retest-action /bin/retest-action
+COPY --from=builder /build/bin/ /syzkaller/bin/
+COPY --from=builder /build/syz-cluster/bin/retest-action /bin/retest-action
 
 ENTRYPOINT ["/bin/retest-action"]

@@ -2,36 +2,27 @@
 # Copyright 2025 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-# Build syzkaller.
-FROM gcr.io/syzkaller/env as syzkaller-builder
-WORKDIR /build
-# First query the modules to facilitate caching.
-COPY go.mod go.sum ./
-RUN go mod download
-COPY --exclude=syz-cluster . .
-RUN make TARGETARCH=amd64
+ARG SMOKE_TEST=0
+ARG IMAGE_PREFIX=local/
+ARG IMAGE_TAG=latest
+FROM ${IMAGE_PREFIX}syz-cluster-build:${IMAGE_TAG} AS builder
 
-FROM golang:1.26-alpine AS boot-action-builder
-WORKDIR /build
-
-# Copy the code and the dependencies.
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-# Copying from the builder to take the `make descriptions` result.
-COPY --from=syzkaller-builder /build/sys/ sys/
-
-RUN go build -o /bin/boot-action /build/syz-cluster/workflow/boot
-
-FROM debian:bookworm
-
+# Regular setup (SMOKE_TEST=0)
+FROM debian:bookworm-slim AS setup-0
 RUN apt-get update && \
     apt-get install -y qemu-system openssh-client
+
+# Smoke test setup (SMOKE_TEST=1)
+FROM debian:bookworm-slim AS setup-1
+# Skip heavy installs for smoke test
+RUN echo "Smoke test mode: skipping dependencies"
+
+FROM setup-${SMOKE_TEST} AS final
 
 # pkg/osutil uses syzkaller user for sandboxing.
 RUN useradd --create-home syzkaller
 
-COPY --from=syzkaller-builder /build/bin/ /syzkaller/bin/
-COPY --from=boot-action-builder /bin/boot-action /bin/boot-action
+COPY --from=builder /build/bin/ /syzkaller/bin/
+COPY --from=builder /build/syz-cluster/bin/boot-action /bin/boot-action
 
 ENTRYPOINT ["/bin/boot-action"]
