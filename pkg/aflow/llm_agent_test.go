@@ -44,6 +44,10 @@ func TestParseLLMError(t *testing.T) {
 		Code:    500,
 		Message: `Internal error encountered.`,
 	}
+	badGatewayError := genai.APIError{
+		Code:    502,
+		Message: `Bad Gateway`,
+	}
 	gatewayError1 := genai.APIError{
 		Code:    504,
 		Message: `Cancelled while waiting for stream data; Failed to close the streaming context.`,
@@ -51,6 +55,10 @@ func TestParseLLMError(t *testing.T) {
 	gatewayError2 := genai.APIError{
 		Code:    504,
 		Message: `Deadline expired before operation could complete.`,
+	}
+	cancelledError := genai.APIError{
+		Code:    499,
+		Message: `The operation was cancelled.`,
 	}
 	normalResp := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{{
@@ -94,6 +102,11 @@ func TestParseLLMError(t *testing.T) {
 		},
 		{
 			resp:      nil,
+			inputErr:  badGatewayError,
+			outputErr: &retryError{time.Second, badGatewayError},
+		},
+		{
+			resp:      nil,
 			inputErr:  gatewayError1,
 			outputErr: &retryError{time.Second, gatewayError1},
 		},
@@ -101,6 +114,11 @@ func TestParseLLMError(t *testing.T) {
 			resp:      nil,
 			inputErr:  gatewayError2,
 			outputErr: &retryError{time.Second, gatewayError2},
+		},
+		{
+			resp:      nil,
+			inputErr:  cancelledError,
+			outputErr: &retryError{time.Second, cancelledError},
 		},
 		{
 			resp: &genai.GenerateContentResponse{
